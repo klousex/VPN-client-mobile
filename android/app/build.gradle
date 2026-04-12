@@ -1,0 +1,113 @@
+plugins {
+    id 'com.android.application'
+}
+
+def repoRoot = rootDir.parentFile
+def reactNativeCli = new File(repoRoot, "node_modules/react-native/cli.js")
+def reactAndroidDir = new File(repoRoot, "node_modules/react-native/ReactAndroid")
+def bundleOutput = new File(projectDir, "src/main/assets/index.android.bundle")
+def assetsDest = new File(projectDir, "src/main/res")
+def cmakePath = { File file -> file.absolutePath.replace('\\', '/') }
+
+android {
+    namespace 'com.wobbmobile'
+    compileSdk 35
+
+    buildFeatures {
+        prefab true
+    }
+
+    defaultConfig {
+        applicationId "com.wobbmobile"
+        minSdk 31
+        targetSdk 35
+        versionCode 1
+        versionName "1.0.0"
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DPROJECT_BUILD_DIR=${cmakePath(buildDir)}",
+                        "-DPROJECT_ROOT_DIR=${cmakePath(rootDir)}",
+                        "-DREACT_ANDROID_DIR=${cmakePath(reactAndroidDir)}",
+                        "-DANDROID_STL=c++_shared",
+                        "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
+            }
+        }
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    externalNativeBuild {
+        cmake {
+            path file('src/main/jni/CMakeLists.txt')
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java']
+            manifest.srcFile 'src/main/AndroidManifest.xml'
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+}
+
+tasks.register("bundleJsAndAssets", Exec) {
+    workingDir repoRoot
+
+    doFirst {
+        bundleOutput.parentFile.mkdirs()
+        assetsDest.mkdirs()
+    }
+
+    if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+        commandLine "cmd", "/c",
+                "node", reactNativeCli.absolutePath,
+                "bundle",
+                "--platform", "android",
+                "--dev", "false",
+                "--reset-cache",
+                "--entry-file", "index.js",
+                "--bundle-output", bundleOutput.absolutePath,
+                "--assets-dest", assetsDest.absolutePath,
+                "--config", new File(repoRoot, "metro.config.js").absolutePath
+    } else {
+        commandLine "node", reactNativeCli.absolutePath,
+                "bundle",
+                "--platform", "android",
+                "--dev", "false",
+                "--reset-cache",
+                "--entry-file", "index.js",
+                "--bundle-output", bundleOutput.absolutePath,
+                "--assets-dest", assetsDest.absolutePath,
+                "--config", new File(repoRoot, "metro.config.js").absolutePath
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn("bundleJsAndAssets")
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+    implementation files('libs/wobb-core.aar')
+    implementation "com.facebook.react:react-android:0.85.0"
+    implementation "com.facebook.hermes:hermes-android:250829098.0.10"
+    implementation "com.google.android.gms:play-services-auth:${rootProject.ext.googlePlayServicesAuthVersion}"
+    implementation "androidx.annotation:annotation:1.7.1"
+    implementation "androidx.appcompat:appcompat:1.6.1"
+    implementation "androidx.core:core-ktx:1.12.0"
+}

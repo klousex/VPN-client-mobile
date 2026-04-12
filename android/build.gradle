@@ -1,0 +1,40 @@
+plugins {
+    id 'com.android.application' version '9.1.0' apply false
+}
+
+ext {
+    compileSdkVersion = 35
+    minSdkVersion = 31
+    targetSdkVersion = 35
+    kotlinVersion = '2.0.21'
+    googlePlayServicesAuthVersion = '21.4.0'
+}
+
+allprojects {
+    configurations.configureEach {
+        resolutionStrategy.dependencySubstitution {
+            substitute(module("com.facebook.react:react-native"))
+                    .using(module("com.facebook.react:react-android:0.85.0"))
+        }
+
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'org.jetbrains.kotlin') {
+                details.useVersion("$kotlinVersion")
+            }
+        }
+    }
+}
+
+subprojects {
+    configurations.configureEach {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == 'org.jetbrains.kotlin') {
+                details.useVersion("$kotlinVersion")
+            }
+        }
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.buildDir
+}

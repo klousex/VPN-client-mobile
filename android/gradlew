@@ -1,0 +1,18 @@
+#!/usr/bin/env sh
+
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+WRAPPER_JAR="$SCRIPT_DIR/gradle/wrapper/gradle-wrapper.jar"
+
+if [ -f "$WRAPPER_JAR" ]; then
+  exec java -classpath "$WRAPPER_JAR" org.gradle.wrapper.GradleWrapperMain "$@"
+fi
+
+if command -v gradle >/dev/null 2>&1; then
+  exec gradle -p "$SCRIPT_DIR" "$@"
+fi
+
+echo "Gradle wrapper JAR is missing and 'gradle' is not installed." >&2
+echo "Open ONLY the 'android' folder in Android Studio and let it regenerate wrapper files." >&2
+exit 1
