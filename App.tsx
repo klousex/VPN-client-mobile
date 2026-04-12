@@ -7,6 +7,7 @@ import {
   Pressable,
   SafeAreaView,
   ScrollView,
+  Share,
   StatusBar,
   StyleSheet,
   Text,
@@ -110,19 +111,20 @@ const GOOGLE_WEB_CLIENT_ID =
   '157778125537-th8lu3rlhkm1gieqisv0e73lvdh0g5re.apps.googleusercontent.com';
 
 const COLORS = {
-  background: '#F3F4F6',
-  panel: '#FFFFFF',
-  border: '#D1D5DB',
-  text: '#111827',
-  muted: '#6B7280',
-  accent: '#111827',
-  accentSoft: '#E5E7EB',
-  success: '#166534',
-  successSoft: '#DCFCE7',
-  warning: '#92400E',
-  warningSoft: '#FEF3C7',
-  danger: '#991B1B',
-  dangerSoft: '#FEE2E2'
+  background: '#08111f',
+  panel: '#111c32',
+  panelMuted: '#0d1728',
+  border: '#1f2d46',
+  text: '#e5e7eb',
+  muted: '#94a3b8',
+  accent: '#3b82f6',
+  accentSoft: '#1d4ed8',
+  success: '#bfdbfe',
+  successSoft: '#172554',
+  warning: '#cbd5e1',
+  warningSoft: '#1e293b',
+  danger: '#fca5a5',
+  dangerSoft: '#3f1d2e'
 };
 
 const { WobbVpnModule } = NativeModules as {
@@ -384,6 +386,14 @@ export default function App() {
 
   const effectiveConnectionState = deriveConnectionState(session, localConnectionState);
   const tone = stateTone(effectiveConnectionState);
+  const selectedLocation = useMemo(() => {
+    const targetId = selectedLocationId || session?.location.selectedId || null;
+    if (!targetId) {
+      return locations[0] || null;
+    }
+
+    return locations.find((entry) => entry.id === targetId) || null;
+  }, [locations, selectedLocationId, session?.location.selectedId]);
 
   useEffect(() => {
     sessionRef.current = session;
@@ -666,6 +676,63 @@ export default function App() {
     }
   }
 
+  async function handleRefreshSession() {
+    if (!installationId) {
+      return;
+    }
+
+    try {
+      setErrorText(null);
+      setLocalConnectionState('verifying');
+      const response = await fetchMobileState(
+        installationId,
+        selectedLocation?.id || session?.location.selectedId || undefined
+      );
+      await applySession(response);
+      appendLog('api', 'Session refreshed.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to refresh session.';
+      setErrorText(message);
+      setLocalConnectionState('error');
+      appendLog('api', message, 'error');
+    }
+  }
+
+  async function handleShareSession() {
+    if (!session) {
+      return;
+    }
+
+    try {
+      const lines = [
+        'Wobb',
+        `Status: ${stateLabel(effectiveConnectionState, session)}`,
+        `Server: ${selectedLocation ? `${selectedLocation.country}${selectedLocation.city ? `, ${selectedLocation.city}` : ''}` : 'Not selected'}`,
+        `Mode: ${session.mode === 'vpn' ? 'TUN' : session.mode === 'proxy' ? 'Proxy' : 'Own server'}`
+      ];
+
+      if (session.provisioning.assignedEndpoint) {
+        lines.push(`Endpoint: ${session.provisioning.assignedEndpoint}`);
+      }
+
+      await Share.share({ message: lines.join('\n') });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to share session.';
+      setErrorText(message);
+      appendLog('app', message, 'error');
+    }
+  }
+
+  async function handleOpenSettings() {
+    try {
+      await Linking.openSettings();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to open settings.';
+      setErrorText(message);
+      appendLog('app', message, 'error');
+    }
+  }
+
   const connectLabel = useMemo(() => {
     if (effectiveConnectionState === 'connected') {
       return 'Disconnect';
@@ -691,16 +758,16 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="dark-content" backgroundColor={COLORS.background} />
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
 
       {booting ? (
         <View style={styles.center}>
-          <ActivityIndicator color={COLORS.text} />
-          <Text style={styles.mutedText}>Starting WOBB</Text>
+          <ActivityIndicator color={COLORS.accent} />
+          <Text style={styles.mutedText}>Starting Wobb</Text>
         </View>
       ) : !session ? (
         <View style={styles.center}>
-          <Text style={styles.screenTitle}>WOBB</Text>
+          <Text style={styles.screenTitle}>Wobb</Text>
           <Text style={styles.screenSubtitle}>Sign in to load your subscription and connect.</Text>
           <Pressable style={styles.primaryButton} onPress={handleSignIn}>
             <Text style={styles.primaryButtonText}>Sign in with Google</Text>
@@ -710,8 +777,8 @@ export default function App() {
       ) : (
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <View style={styles.header}>
-            <View>
-              <Text style={styles.screenTitle}>WOBB</Text>
+            <View style={styles.headerCopy}>
+              <Text style={styles.screenTitle}>Wobb</Text>
               <Text style={styles.screenSubtitle}>{session.user.googleEmail}</Text>
             </View>
             <View style={[styles.stateBadge, { backgroundColor: tone.background }]}>
@@ -721,8 +788,19 @@ export default function App() {
             </View>
           </View>
 
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Connection</Text>
+          <View style={styles.connectionCard}>
+            <View style={styles.connectionCopy}>
+              <Text style={styles.sectionLabel}>Selected Server</Text>
+              <Text style={styles.connectionTitle}>
+                {selectedLocation ? selectedLocation.country : 'No server selected'}
+              </Text>
+              <Text style={styles.connectionSubtitle}>
+                {selectedLocation
+                  ? `${selectedLocation.city || 'Default'}${session.provisioning.assignedEndpoint ? ` · ${session.provisioning.assignedEndpoint}` : ''}`
+                  : 'No endpoint assigned'}
+              </Text>
+            </View>
+
             <Pressable
               disabled={connectDisabled}
               onPress={handleToggleVpn}
@@ -730,14 +808,33 @@ export default function App() {
             >
               <Text style={styles.connectButtonLabel}>{connectLabel}</Text>
             </Pressable>
-            <Text style={styles.panelHint}>
-              Mode: {session.mode} {session.provisioning.assignedEndpoint ? `| ${session.provisioning.assignedEndpoint}` : ''}
-            </Text>
-            {session.subscription.blockedReason ? (
-              <Pressable style={styles.secondaryButton} onPress={handleOpenTelegramPurchase}>
-                <Text style={styles.secondaryButtonText}>Open Telegram to renew</Text>
-              </Pressable>
-            ) : null}
+          </View>
+
+          <View style={styles.summaryRow}>
+            <View style={styles.summaryChip}>
+              <Text style={styles.summaryLabel}>Mode</Text>
+              <Text style={styles.summaryValue}>
+                {session.mode === 'vpn' ? 'TUN' : session.mode === 'proxy' ? 'Proxy' : 'Own server'}
+              </Text>
+            </View>
+            <View style={styles.summaryChip}>
+              <Text style={styles.summaryLabel}>Server</Text>
+              <Text style={styles.summaryValue}>
+                {selectedLocation ? selectedLocation.flag : '--'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.quickActions}>
+            <Pressable style={styles.quickActionButton} onPress={handleRefreshSession}>
+              <Text style={styles.quickActionLabel}>Refresh</Text>
+            </Pressable>
+            <Pressable style={styles.quickActionButton} onPress={handleShareSession}>
+              <Text style={styles.quickActionLabel}>Share</Text>
+            </Pressable>
+            <Pressable style={styles.quickActionButton} onPress={handleOpenSettings}>
+              <Text style={styles.quickActionLabel}>Settings</Text>
+            </Pressable>
           </View>
 
           <View style={styles.panel}>
@@ -767,12 +864,12 @@ export default function App() {
           </View>
 
           <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Locations</Text>
+            <Text style={styles.panelTitle}>Servers</Text>
             {locations.map((item, index) => {
               const selected = item.id === (selectedLocationId || session.location.selectedId);
               return (
                 <React.Fragment key={item.id}>
-                  {index > 0 ? <View style={styles.separator} /> : null}
+                  {index > 0 ? <View style={styles.locationSeparator} /> : null}
                   <Pressable
                     onPress={() => handleLocationSelect(item)}
                     style={[styles.locationRow, selected && styles.locationRowSelected]}
@@ -784,7 +881,7 @@ export default function App() {
                         <Text style={styles.locationSubtitle}>{item.city || 'Default edge'}</Text>
                       </View>
                     </View>
-                    <Text style={styles.locationMeta}>{selected ? 'Selected' : `${item.loadPercent}% load`}</Text>
+                    <Text style={styles.locationMeta}>{selected ? 'Selected' : item.city || 'Server'}</Text>
                   </Pressable>
                 </React.Fragment>
               );
@@ -792,7 +889,7 @@ export default function App() {
           </View>
 
           <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Diagnostics</Text>
+            <Text style={styles.panelTitle}>Logs</Text>
             <View style={styles.detailRow}>
               <Text style={styles.detailLabel}>Backend state</Text>
               <Text style={styles.detailValue}>{session.state}</Text>
@@ -848,13 +945,16 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: 16,
-    gap: 14
+    gap: 12
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     gap: 12
+  },
+  headerCopy: {
+    flex: 1
   },
   screenTitle: {
     color: COLORS.text,
@@ -874,9 +974,35 @@ const styles = StyleSheet.create({
     padding: 16,
     gap: 12
   },
+  connectionCard: {
+    backgroundColor: COLORS.panel,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 16,
+    gap: 16
+  },
+  connectionCopy: {
+    gap: 6
+  },
+  sectionLabel: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase'
+  },
+  connectionTitle: {
+    color: COLORS.text,
+    fontSize: 22,
+    fontWeight: '700'
+  },
+  connectionSubtitle: {
+    color: COLORS.muted,
+    fontSize: 13
+  },
   panelTitle: {
     color: COLORS.text,
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '700'
   },
   stateBadge: {
@@ -889,26 +1015,62 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   connectButton: {
-    alignSelf: 'center',
-    width: 220,
-    height: 220,
-    borderRadius: 110,
+    width: '100%',
+    borderRadius: 8,
     backgroundColor: COLORS.accent,
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'center',
+    paddingVertical: 14
   },
   connectButtonDisabled: {
     opacity: 0.45
   },
   connectButtonLabel: {
     color: '#FFFFFF',
-    fontSize: 24,
+    fontSize: 16,
     fontWeight: '700'
   },
-  panelHint: {
+  summaryRow: {
+    flexDirection: 'row',
+    gap: 10
+  },
+  summaryChip: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.panelMuted,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 4
+  },
+  summaryLabel: {
     color: COLORS.muted,
+    fontSize: 12
+  },
+  summaryValue: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600'
+  },
+  quickActions: {
+    flexDirection: 'row',
+    gap: 10
+  },
+  quickActionButton: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.panelMuted,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11
+  },
+  quickActionLabel: {
+    color: COLORS.text,
     fontSize: 13,
-    textAlign: 'center'
+    fontWeight: '600'
   },
   primaryButton: {
     backgroundColor: COLORS.accent,
@@ -949,8 +1111,8 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     textAlign: 'right'
   },
-  separator: {
-    height: 8
+  locationSeparator: {
+    height: 10
   },
   locationRow: {
     borderWidth: 1,
@@ -960,11 +1122,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12
+    gap: 12,
+    backgroundColor: COLORS.panelMuted
   },
   locationRowSelected: {
-    backgroundColor: COLORS.accentSoft,
-    borderColor: COLORS.text
+    backgroundColor: '#11213f',
+    borderColor: COLORS.accent
   },
   locationPrimary: {
     flexDirection: 'row',
@@ -990,13 +1153,15 @@ const styles = StyleSheet.create({
   },
   locationMeta: {
     color: COLORS.muted,
-    fontSize: 12
+    fontSize: 12,
+    maxWidth: 90,
+    textAlign: 'right'
   },
   logContainer: {
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: 8,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: COLORS.panelMuted,
     padding: 12,
     gap: 10,
     maxHeight: 260
