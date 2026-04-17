@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   DeviceEventEmitter,
-  Linking,
   NativeModules,
   Pressable,
   SafeAreaView,
@@ -11,99 +11,33 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  View
+  TextInput,
+  View,
 } from 'react-native';
-import { GoogleSignin } from './googleSignIn';
 import * as storage from './storage';
+import {
+  bootstrapDraftToProfile,
+  buildTunnelConfig,
+  createEmptyBootstrapDraft,
+  createEmptyProfile,
+  createShareLink,
+  generateUuid,
+  normalizeProfile,
+  profileEndpoint,
+  type BootstrapDraft,
+  type LocalProfile,
+  type ProfileMode,
+  type ValidationResult,
+  validateProfile,
+} from './profileUtils';
 
-type ConnectionState =
-  | 'idle'
-  | 'verifying'
-  | 'permission_required'
-  | 'connecting'
-  | 'connected'
-  | 'disconnecting'
-  | 'blocked'
-  | 'error';
-
-type ConnectionMode = 'vpn' | 'proxy' | 'own_server';
-
-type ApiError = Error & {
-  code?: string;
-  prompt?: string;
-};
-
-type VpnProvisioningConfig = Record<string, unknown> & {
-  xrayConfig?: Record<string, unknown> | null;
-  stealthXrayConfig?: Record<string, unknown> | null;
-  assignedEndpoint?: string | null;
-};
-
-type SessionData = {
-  mode: ConnectionMode;
-  state: 'idle' | 'blocked';
-  user: {
-    id: number;
-    googleEmail: string;
-    googleSub: string;
-    uuid: string;
-    xrayUuid: string | null;
-    vpnKey: string | null;
-    installationId: string | null;
-    telegramUsername: string | null;
-  };
-  subscription: {
-    tier: string;
-    title: string;
-    status: string;
-    isLifetime: boolean;
-    isActive: boolean;
-    expiryDate: string | null;
-    daysRemaining: number | null;
-    devicesLimit: number;
-    blockedReason: string | null;
-  };
-  traffic: {
-    usedBytes: number;
-    limitBytes: number;
-    remainingBytes: number;
-  };
-  location: {
-    selectedId: string | null;
-  };
-  provisioning: {
-    assignedEndpoint: string | null;
-    maintenanceMode: boolean;
-    maintenanceReason: string | null;
-    vpnConfig: Record<string, unknown> | null;
-  };
-  diagnostics: {
-    serverTime: string;
-    messages: Array<{
-      level?: string;
-      message: string;
-    }>;
-  };
-};
-
-type SessionApiResponse = {
-  success: boolean;
-  message?: string;
-  data?: SessionData;
-};
-
-type LocationItem = {
-  id: string;
-  country: string;
-  flag: string;
-  city: string;
-  loadPercent: number;
-};
+type ConnectionState = 'idle' | 'permission_required' | 'connecting' | 'connected' | 'disconnecting' | 'error';
+type ViewMode = 'home' | 'form' | 'bootstrap';
 
 type DiagnosticLogEntry = {
   id: string;
   level: 'info' | 'warn' | 'error';
-  source: 'app' | 'native' | 'api';
+  source: 'app' | 'native' | 'helper';
   message: string;
   timestamp: string;
 };
@@ -114,35 +48,36 @@ type OnboardingSlide = {
   body: string;
 };
 
-const API_BASE_CANDIDATES = ['http://127.0.0.1:3000', 'http://10.0.2.2:3000'];
-const SESSION_CACHE_KEY = 'wobb.mobile.session.v7';
-const SESSION_TOKEN_KEY = 'wobb.mobile.session-token.v4';
-const INSTALLATION_ID_KEY = 'wobb.mobile.installation-id.v1';
-const SELECTED_LOCATION_KEY = 'wobb.mobile.location.v1';
-const ONBOARDING_COMPLETE_KEY = 'wobb.mobile.onboarding.v1';
-const GOOGLE_WEB_CLIENT_ID =
-  '157778125537-th8lu3rlhkm1gieqisv0e73lvdh0g5re.apps.googleusercontent.com';
+type BootstrapPlan = {
+  draftProfile?: Partial<BootstrapDraft>;
+  profileReady?: boolean;
+  profile?: Partial<LocalProfile>;
+  missingFields?: string[];
+  manualSteps?: string[];
+  panelTemplate?: Record<string, unknown>;
+  shareLink?: string | null;
+};
+
+const PROFILES_KEY = 'wobb.mobile.selfhosted.profiles.v1';
+const ACTIVE_PROFILE_KEY = 'wobb.mobile.selfhosted.active-profile.v1';
+const ONBOARDING_COMPLETE_KEY = 'wobb.mobile.selfhosted.onboarding.v1';
+const HELPER_API_BASE_CANDIDATES = ['http://127.0.0.1:3000', 'http://10.0.2.2:3000'];
 
 const ONBOARDING_SLIDES: OnboardingSlide[] = [
   {
-    eyebrow: 'Fast secure connection',
-    title: 'Connect in seconds',
-    body: 'Set up your account, choose a server, and keep the flow simple from the first launch.',
+    eyebrow: 'Self-hosted access',
+    title: 'Bring your own server',
+    body: 'Use Wobb with your own VLESS and REALITY profile instead of a public hosted plan.',
   },
   {
-    eyebrow: 'Global access made simple',
-    title: 'Pick a server and go',
-    body: 'Refresh your session, switch locations, and use one clean connection path.',
+    eyebrow: 'Manual profile first',
+    title: 'Save one clean config',
+    body: 'Add your host, UUID, server name, public key, and short ID locally on the device.',
   },
   {
-    eyebrow: 'Private by design',
-    title: 'Modern infrastructure',
-    body: 'Provisioning stays tied to your current account and subscription state.',
-  },
-  {
-    eyebrow: 'Ready to continue',
-    title: 'Sign in with Google',
-    body: 'Use your Google account to load your plan and create the current session.',
+    eyebrow: 'Optional setup helper',
+    title: 'Bootstrap your VPS',
+    body: 'Generate a setup plan when you want help preparing a new server, then connect with the saved profile.',
   },
 ];
 
@@ -157,8 +92,8 @@ const COLORS = {
   accentSoft: '#1d4ed8',
   success: '#bfdbfe',
   successSoft: '#172554',
-  warning: '#cbd5e1',
-  warningSoft: '#1e293b',
+  warning: '#fef08a',
+  warningSoft: '#3f3b0b',
   danger: '#fca5a5',
   dangerSoft: '#3f1d2e'
 };
@@ -168,7 +103,6 @@ const { WobbVpnModule } = NativeModules as {
     prepareVpn?: () => Promise<{ granted?: boolean }>;
     startVpn?: (configJson: string) => Promise<void>;
     stopVpn?: () => Promise<void>;
-    getOrCreateInstallationId?: () => Promise<string>;
   };
 };
 
@@ -199,102 +133,6 @@ const VpnInterface = {
   }
 };
 
-function createPseudoUuid(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (character) => {
-    const random = Math.floor(Math.random() * 16);
-    const next = character === 'x' ? random : (random & 0x3) | 0x8;
-    return next.toString(16);
-  });
-}
-
-async function getInstallationId(): Promise<string> {
-  if (WobbVpnModule?.getOrCreateInstallationId) {
-    return WobbVpnModule.getOrCreateInstallationId();
-  }
-
-  const existing = await storage.getItem(INSTALLATION_ID_KEY);
-  if (existing) {
-    return existing;
-  }
-
-  const created = createPseudoUuid();
-  await storage.setItem(INSTALLATION_ID_KEY, created);
-  return created;
-}
-
-async function readCachedSession(): Promise<SessionData | null> {
-  const raw = await storage.getItem(SESSION_CACHE_KEY);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(raw) as SessionData;
-  } catch {
-    return null;
-  }
-}
-
-async function writeCachedSession(session: SessionData): Promise<void> {
-  await storage.setItem(SESSION_CACHE_KEY, JSON.stringify(session));
-}
-
-async function readCachedToken(): Promise<string | null> {
-  return storage.getItem(SESSION_TOKEN_KEY);
-}
-
-async function writeCachedToken(idToken: string): Promise<void> {
-  await storage.setItem(SESSION_TOKEN_KEY, idToken);
-}
-
-async function readSelectedLocation(): Promise<string | null> {
-  return storage.getItem(SELECTED_LOCATION_KEY);
-}
-
-async function writeSelectedLocation(locationId: string): Promise<void> {
-  await storage.setItem(SELECTED_LOCATION_KEY, locationId);
-}
-
-async function readOnboardingComplete(): Promise<boolean> {
-  return (await storage.getItem(ONBOARDING_COMPLETE_KEY)) === '1';
-}
-
-async function writeOnboardingComplete(): Promise<void> {
-  await storage.setItem(ONBOARDING_COMPLETE_KEY, '1');
-}
-
-function formatBytes(bytes: number): string {
-  const safeBytes = Math.max(0, Number(bytes || 0));
-  const gb = safeBytes / (1024 * 1024 * 1024);
-  const rounded = gb < 10 ? Math.round(gb * 10) / 10 : Math.round(gb);
-  return `${rounded} GB`;
-}
-
-function formatExpiry(subscription: SessionData['subscription']): string {
-  if (subscription.isLifetime) {
-    return 'Lifetime';
-  }
-
-  if (subscription.daysRemaining == null) {
-    return 'Unknown';
-  }
-
-  return `${subscription.daysRemaining} day${subscription.daysRemaining === 1 ? '' : 's'}`;
-}
-
-function formatBlockedReason(reason: string | null): string {
-  switch (reason) {
-    case 'quota_exhausted':
-      return 'Traffic limit reached';
-    case 'expired':
-      return 'Subscription expired';
-    case 'inactive':
-      return 'Subscription inactive';
-    default:
-      return reason || 'Blocked';
-  }
-}
-
 function createLogEntry(
   source: DiagnosticLogEntry['source'],
   message: string,
@@ -305,323 +143,192 @@ function createLogEntry(
     source,
     message,
     level,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   };
 }
 
-function deriveConnectionState(session: SessionData | null, localState: ConnectionState): ConnectionState {
-  if (session?.subscription?.blockedReason) {
-    return 'blocked';
-  }
-
-  return localState;
-}
-
-function createApiError(message: string, code?: string, prompt?: string): ApiError {
-  const error = new Error(message) as ApiError;
-  error.code = code;
-  error.prompt = prompt;
-  return error;
-}
-
-function friendlyErrorMessage(error: unknown): string {
-  const apiError = error as ApiError;
-
-  switch (apiError?.code) {
-    case 'auth_error':
-      return 'Google sign-in could not be verified.';
-    case 'backend_unavailable':
-      return 'Backend is unavailable. Check the local API and USB port reverse.';
-    case 'session_transfer_required':
-      return apiError.prompt || 'This account is already active on another device.';
-    case 'xui_unavailable':
-      return 'Provisioning service is unavailable right now.';
-    case 'inbound_missing':
-      return 'No usable VPN inbound is available on the server.';
-    case 'bad_inbound_mapping':
-      return 'The selected server inbound is configured incorrectly.';
-    case 'provisioning_failed':
-      return 'VPN provisioning failed on the backend.';
-    case 'invalid_profile':
-      return 'The backend returned an invalid VPN profile.';
-    case 'tunnel_start_failed':
-      return 'The Android tunnel could not start.';
-    default:
-      return error instanceof Error ? error.message : 'Request failed.';
-  }
-}
-
-function isPlaceholderRuntimeValue(value: unknown): boolean {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-
-  return (
-    normalized.includes('example.com') ||
-    normalized.includes('replace-with-') ||
-    normalized.includes('your-google-') ||
-    normalized === 'change-me'
-  );
-}
-
-function validateTunnelConfig(config: Record<string, unknown> | null): { valid: boolean; reason?: string; endpoint?: string } {
-  if (!config || typeof config !== 'object') {
-    return {
-      valid: false,
-      reason: 'The backend returned an invalid VPN profile.',
-    };
-  }
-
-  const outbounds = Array.isArray((config as { outbounds?: unknown[] }).outbounds)
-    ? ((config as { outbounds?: unknown[] }).outbounds as Array<Record<string, any>>)
-    : [];
-  const proxy = outbounds.find((entry) => String(entry?.tag || '').toLowerCase() === 'proxy') || outbounds[0];
-  const vnext = Array.isArray(proxy?.settings?.vnext) ? proxy.settings.vnext[0] : null;
-  const user = Array.isArray(vnext?.users) ? vnext.users[0] : null;
-  const streamSettings = proxy?.streamSettings || {};
-  const security = String(streamSettings?.security || '').trim().toLowerCase();
-  const address = String(vnext?.address || '').trim();
-  const port = Number(vnext?.port);
-
-  if (!address || isPlaceholderRuntimeValue(address)) {
-    return { valid: false, reason: 'The backend returned an invalid VPN host.' };
-  }
-
-  if (!Number.isFinite(port) || port < 1 || port > 65535) {
-    return { valid: false, reason: 'The backend returned an invalid VPN port.' };
-  }
-
-  if (!String(user?.id || '').trim()) {
-    return { valid: false, reason: 'The backend returned an empty client UUID.' };
-  }
-
-  if (security === 'reality') {
-    const realitySettings = streamSettings?.realitySettings || {};
-    if (isPlaceholderRuntimeValue(realitySettings?.publicKey) || !String(realitySettings?.publicKey || '').trim()) {
-      return { valid: false, reason: 'The backend returned an invalid REALITY public key.' };
-    }
-
-    if (isPlaceholderRuntimeValue(realitySettings?.shortId) || !String(realitySettings?.shortId || '').trim()) {
-      return { valid: false, reason: 'The backend returned an invalid REALITY short ID.' };
-    }
-
-    if (isPlaceholderRuntimeValue(realitySettings?.serverName) || !String(realitySettings?.serverName || '').trim()) {
-      return { valid: false, reason: 'The backend returned an invalid REALITY server name.' };
-    }
-  }
-
-  return {
-    valid: true,
-    endpoint: `${address}:${port}`,
-  };
-}
-
-function extractTunnelConfig(
-  provisioningConfig: SessionData['provisioning']['vpnConfig'],
-  mode: ConnectionMode
-): Record<string, unknown> | null {
-  if (!provisioningConfig || typeof provisioningConfig !== 'object') {
-    return null;
-  }
-
-  const typedConfig = provisioningConfig as VpnProvisioningConfig;
-  const candidate =
-    mode === 'proxy' && typedConfig.stealthXrayConfig && typeof typedConfig.stealthXrayConfig === 'object'
-      ? typedConfig.stealthXrayConfig
-      : typedConfig.xrayConfig && typeof typedConfig.xrayConfig === 'object'
-        ? typedConfig.xrayConfig
-        : null;
-
-  return validateTunnelConfig(candidate).valid ? candidate : null;
-}
-
-async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  let lastError: unknown;
-
-  for (const baseUrl of API_BASE_CANDIDATES) {
-    try {
-      const response = await fetch(`${baseUrl}${path}`, init);
-      const rawBody = await response.text();
-      const payload = rawBody
-        ? (JSON.parse(rawBody) as T & { message?: string; code?: string; prompt?: string })
-        : ({} as T & { message?: string; code?: string; prompt?: string });
-
-      if (!response.ok) {
-        throw createApiError(
-          payload.message || `Request failed with status ${response.status}`,
-          payload.code,
-          payload.prompt
-        );
-      }
-
-      return payload;
-    } catch (error) {
-      if ((error as ApiError)?.code) {
-        throw error;
-      }
-
-      lastError = error;
-    }
-  }
-
-  throw createApiError(
-    lastError instanceof Error ? lastError.message : 'API request failed',
-    'backend_unavailable'
-  );
-}
-
-async function openMobileSession(params: {
-  installationId: string;
-  googleIdToken: string;
-  transferSession?: boolean;
-  locationId?: string;
-}): Promise<SessionApiResponse> {
-  return apiRequest<SessionApiResponse>('/api/v1/mobile/session', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(params)
-  });
-}
-
-async function fetchMobileState(
-  installationId: string,
-  locationId?: string
-): Promise<SessionApiResponse> {
-  const query = locationId ? `?locationId=${encodeURIComponent(locationId)}` : '';
-  return apiRequest<SessionApiResponse>(`/api/v1/mobile/state/${installationId}${query}`);
-}
-
-async function fetchLocations(): Promise<LocationItem[]> {
-  const response = await apiRequest<{ success: boolean; data?: LocationItem[] }>('/api/locations');
-  return response.data || [];
-}
-
-function stateLabel(state: ConnectionState, session: SessionData | null): string {
+function stateLabel(state: ConnectionState): string {
   switch (state) {
-    case 'verifying':
-      return 'Verifying access';
     case 'permission_required':
-      return 'VPN permission required';
+      return 'Permission required';
     case 'connecting':
       return 'Connecting';
     case 'connected':
       return 'Connected';
     case 'disconnecting':
       return 'Disconnecting';
-    case 'blocked':
-      return formatBlockedReason(session?.subscription?.blockedReason || null);
     case 'error':
       return 'Connection error';
     default:
-      return 'Idle';
+      return 'Disconnected';
   }
 }
 
 function stateTone(state: ConnectionState) {
   if (state === 'connected') {
-    return {
-      text: COLORS.success,
-      background: COLORS.successSoft
-    };
+    return { text: COLORS.success, background: COLORS.successSoft };
+  }
+  if (state === 'error') {
+    return { text: COLORS.danger, background: COLORS.dangerSoft };
+  }
+  if (state === 'connecting' || state === 'disconnecting' || state === 'permission_required') {
+    return { text: COLORS.warning, background: COLORS.warningSoft };
+  }
+  return { text: COLORS.text, background: COLORS.panelMuted };
+}
+
+async function readProfiles(): Promise<LocalProfile[]> {
+  const raw = await storage.getItem(PROFILES_KEY);
+  if (!raw) {
+    return [];
   }
 
-  if (state === 'blocked' || state === 'error') {
-    return {
-      text: COLORS.danger,
-      background: COLORS.dangerSoft
-    };
+  try {
+    const parsed = JSON.parse(raw) as LocalProfile[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeProfiles(profiles: LocalProfile[]): Promise<void> {
+  await storage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+}
+
+async function readActiveProfileId(): Promise<string | null> {
+  return storage.getItem(ACTIVE_PROFILE_KEY);
+}
+
+async function writeActiveProfileId(profileId: string | null): Promise<void> {
+  if (profileId) {
+    await storage.setItem(ACTIVE_PROFILE_KEY, profileId);
+    return;
   }
 
-  if (state === 'verifying' || state === 'connecting' || state === 'disconnecting' || state === 'permission_required') {
-    return {
-      text: COLORS.warning,
-      background: COLORS.warningSoft
-    };
+  await storage.removeItem(ACTIVE_PROFILE_KEY);
+}
+
+async function readOnboardingComplete(): Promise<boolean> {
+  return (await storage.getItem(ONBOARDING_COMPLETE_KEY)) === '1';
+}
+
+async function writeOnboardingComplete(): Promise<void> {
+  await storage.setItem(ONBOARDING_COMPLETE_KEY, '1');
+}
+
+async function helperRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  let lastError: unknown;
+
+  for (const baseUrl of HELPER_API_BASE_CANDIDATES) {
+    try {
+      const response = await fetch(`${baseUrl}${path}`, init);
+      const rawBody = await response.text();
+      const payload = rawBody ? (JSON.parse(rawBody) as T & { message?: string }) : ({} as T & { message?: string });
+
+      if (!response.ok) {
+        throw new Error(payload.message || `Helper request failed with status ${response.status}`);
+      }
+
+      return payload;
+    } catch (error) {
+      lastError = error;
+    }
   }
 
-  return {
-    text: COLORS.text,
-    background: COLORS.accentSoft
-  };
+  throw new Error(lastError instanceof Error ? lastError.message : 'Helper service is unavailable.');
+}
+
+function validationText(validation: ValidationResult): string | null {
+  return validation.valid ? null : validation.errors[0] || 'Profile is incomplete.';
+}
+
+function FormField({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  keyboardType,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder?: string;
+  keyboardType?: 'default' | 'numeric';
+  multiline?: boolean;
+}) {
+  return (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor={COLORS.muted}
+        keyboardType={keyboardType}
+        multiline={multiline}
+        style={[styles.input, multiline && styles.inputMultiline]}
+      />
+    </View>
+  );
+}
+
+function ModeToggle({
+  value,
+  onChange,
+}: {
+  value: ProfileMode;
+  onChange: (next: ProfileMode) => void;
+}) {
+  return (
+    <View style={styles.modeToggle}>
+      {(['vpn', 'proxy'] as ProfileMode[]).map((option) => {
+        const selected = value === option;
+        return (
+          <Pressable
+            key={option}
+            onPress={() => onChange(option)}
+            style={[styles.modeButton, selected && styles.modeButtonActive]}
+          >
+            <Text style={[styles.modeButtonText, selected && styles.modeButtonTextActive]}>
+              {option === 'vpn' ? 'VPN' : 'Proxy'}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [onboardingStep, setOnboardingStep] = useState(0);
-  const [localConnectionState, setLocalConnectionState] = useState<ConnectionState>('idle');
-  const [session, setSession] = useState<SessionData | null>(null);
-  const [locations, setLocations] = useState<LocationItem[]>([]);
-  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
-  const [installationId, setInstallationId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>('home');
+  const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
+  const [profiles, setProfiles] = useState<LocalProfile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
+  const [formDraft, setFormDraft] = useState<LocalProfile>(createEmptyProfile());
+  const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
+  const [bootstrapDraft, setBootstrapDraft] = useState<BootstrapDraft>(createEmptyBootstrapDraft());
+  const [bootstrapPlan, setBootstrapPlan] = useState<BootstrapPlan | null>(null);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [logs, setLogs] = useState<DiagnosticLogEntry[]>([]);
-  const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const sessionRef = useRef<SessionData | null>(null);
+  const logViewportRef = useRef<ScrollView | null>(null);
 
-  const effectiveConnectionState = deriveConnectionState(session, localConnectionState);
-  const tone = stateTone(effectiveConnectionState);
-  const currentSlide = ONBOARDING_SLIDES[Math.min(onboardingStep, ONBOARDING_SLIDES.length - 1)];
-  const selectedLocation = useMemo(() => {
-    const targetId = selectedLocationId || session?.location.selectedId || null;
-    if (!targetId) {
-      return locations[0] || null;
-    }
+  const activeProfile = useMemo(
+    () => profiles.find((profile) => profile.id === activeProfileId) || null,
+    [profiles, activeProfileId]
+  );
+  const activeValidation = useMemo(
+    () => (activeProfile ? validateProfile(activeProfile) : { valid: false, errors: ['Add a profile to connect.'] }),
+    [activeProfile]
+  );
+  const tone = stateTone(connectionState);
 
-    return locations.find((entry) => entry.id === targetId) || null;
-  }, [locations, selectedLocationId, session?.location.selectedId]);
-
-  useEffect(() => {
-    sessionRef.current = session;
-  }, [session]);
-
-  function appendLog(
-    source: DiagnosticLogEntry['source'],
-    message: string,
-    level: DiagnosticLogEntry['level'] = 'info'
-  ) {
-    setLogs((current) => [...current, createLogEntry(source, message, level)].slice(-120));
-  }
-
-  async function applySession(response: SessionApiResponse) {
-    if (!response.data) {
-      return;
-    }
-
-    await writeCachedSession(response.data);
-    setSession(response.data);
-    setSelectedLocationId(response.data.location.selectedId);
-
-    if (response.data.diagnostics.messages.length > 0) {
-      for (const message of response.data.diagnostics.messages) {
-        appendLog('api', message.message, (message.level as DiagnosticLogEntry['level']) || 'info');
-      }
-    }
-
-    if (response.data.provisioning.maintenanceMode && response.data.provisioning.maintenanceReason) {
-      appendLog('api', response.data.provisioning.maintenanceReason, 'warn');
-    }
-
-    if (response.data.provisioning.assignedEndpoint) {
-      appendLog('api', `Profile ready for ${response.data.provisioning.assignedEndpoint}.`);
-    }
-
-    const provisioningValidation = validateTunnelConfig(
-      extractTunnelConfig(response.data.provisioning.vpnConfig, response.data.mode)
-    );
-    if (response.data.provisioning.vpnConfig && !provisioningValidation.valid) {
-      setErrorText(provisioningValidation.reason || 'The backend returned an invalid VPN profile.');
-      appendLog('api', provisioningValidation.reason || 'The backend returned an invalid VPN profile.', 'error');
-    } else {
-      setErrorText(null);
-    }
-
-    if (response.message === 'Limit Exceeded' || response.data.subscription.blockedReason) {
-      setLocalConnectionState('blocked');
-    } else if (localConnectionState === 'verifying') {
-      setLocalConnectionState('idle');
-    }
+  function appendLog(source: DiagnosticLogEntry['source'], message: string, level: DiagnosticLogEntry['level'] = 'info') {
+    setLogs((current) => [...current, createLogEntry(source, message, level)].slice(-150));
   }
 
   useEffect(() => {
@@ -629,98 +336,58 @@ export default function App() {
 
     const statusListener = DeviceEventEmitter.addListener('WobbVpnStatus', (payload) => {
       const status = String(payload?.status || '').toLowerCase();
-
       if (status === 'connecting') {
-        setLocalConnectionState('connecting');
+        setConnectionState('connecting');
         appendLog('native', 'VPN service is starting.');
       } else if (status === 'connected') {
-        setLocalConnectionState('connected');
+        setConnectionState('connected');
         appendLog('native', 'VPN tunnel connected.');
       } else if (status === 'disconnecting') {
-        setLocalConnectionState('disconnecting');
-        appendLog('native', 'VPN tunnel is stopping.');
-      } else if (status === 'idle' || status === 'disconnected') {
-        setLocalConnectionState(sessionRef.current?.subscription.blockedReason ? 'blocked' : 'idle');
-        appendLog('native', 'VPN tunnel is idle.');
+        setConnectionState('disconnecting');
+        appendLog('native', 'VPN service is stopping.');
       } else if (status === 'error') {
-        setLocalConnectionState('error');
+        setConnectionState('error');
         appendLog('native', 'VPN service reported an error.', 'error');
+      } else if (status === 'stopped' || status === 'idle') {
+        setConnectionState('idle');
+      }
+    });
+
+    const logListener = DeviceEventEmitter.addListener('WobbVpnLog', (payload) => {
+      const stream = String(payload?.stream || 'native');
+      const message = String(payload?.message || '').trim();
+      if (message) {
+        appendLog('native', `${stream}: ${message}`);
       }
     });
 
     const permissionListener = DeviceEventEmitter.addListener('WobbVpnPermission', (payload) => {
       const status = String(payload?.status || '').toLowerCase();
       if (status === 'requested') {
-        setLocalConnectionState('permission_required');
-        appendLog('native', 'VPN permission requested on device.', 'warn');
-      } else if (status === 'denied') {
-        setLocalConnectionState('permission_required');
-        appendLog('native', 'VPN permission denied.', 'error');
-      } else if (status === 'granted') {
-        appendLog('native', 'VPN permission granted.');
+        setConnectionState('permission_required');
+      }
+      if (status === 'denied') {
+        setConnectionState('error');
+        setErrorText('VPN permission was denied.');
+        appendLog('native', 'VPN permission was denied.', 'error');
       }
     });
 
-    const logListener = DeviceEventEmitter.addListener('WobbVpnLog', (payload) => {
-      const stream = String(payload?.stream || 'native').toLowerCase();
-      const level = stream === 'stderr' ? 'error' : stream === 'service' ? 'info' : 'warn';
-      appendLog('native', String(payload?.message || ''), level);
-    });
-
-    async function bootstrap() {
+    async function boot() {
       try {
-        await GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID, offlineAccess: false });
-
-        const [nextInstallationId, savedLocationId, cached, fetchedLocations, onboardingDone] = await Promise.all([
-          getInstallationId(),
-          readSelectedLocation(),
-          readCachedSession(),
-          fetchLocations(),
-          readOnboardingComplete()
+        const [storedProfiles, storedActiveProfileId, storedOnboarding] = await Promise.all([
+          readProfiles(),
+          readActiveProfileId(),
+          readOnboardingComplete(),
         ]);
 
         if (cancelled) {
           return;
         }
 
-        setOnboardingComplete(onboardingDone);
-        setInstallationId(nextInstallationId);
-        setLocations(fetchedLocations);
-        appendLog('app', 'Application initialized.');
-
-        const defaultLocationId =
-          savedLocationId && fetchedLocations.some((entry) => entry.id === savedLocationId)
-            ? savedLocationId
-            : cached?.location.selectedId || fetchedLocations[0]?.id || null;
-
-        setSelectedLocationId(defaultLocationId);
-
-        if (cached) {
-          setSession(cached);
-          appendLog('app', 'Loaded cached session.');
-        }
-
-        const cachedToken = await readCachedToken();
-        if (cachedToken) {
-          setLocalConnectionState('verifying');
-          const response = await openMobileSession({
-            installationId: nextInstallationId,
-            googleIdToken: cachedToken,
-            locationId: defaultLocationId || undefined
-          });
-          await applySession(response);
-          if (defaultLocationId) {
-            await writeSelectedLocation(defaultLocationId);
-          }
-          appendLog('api', 'Session refreshed from backend.');
-        }
-      } catch (error) {
-        if (!cancelled) {
-          const message = friendlyErrorMessage(error);
-          setErrorText(message);
-          setLocalConnectionState('error');
-          appendLog('app', message, 'error');
-        }
+        setProfiles(storedProfiles);
+        setActiveProfileId(storedActiveProfileId || storedProfiles[0]?.id || null);
+        setOnboardingComplete(storedOnboarding);
       } finally {
         if (!cancelled) {
           setBooting(false);
@@ -728,252 +395,225 @@ export default function App() {
       }
     }
 
-    bootstrap();
+    boot();
 
     return () => {
       cancelled = true;
       statusListener.remove();
-      permissionListener.remove();
       logListener.remove();
+      permissionListener.remove();
     };
   }, []);
 
   useEffect(() => {
-    if (!installationId || !session) {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-      return;
-    }
+    logViewportRef.current?.scrollToEnd({ animated: true });
+  }, [logs]);
 
-    const refresh = async () => {
-      try {
-        const response = await fetchMobileState(
-          installationId,
-          selectedLocationId || session.location.selectedId || undefined
-        );
-        await applySession(response);
-      } catch (error) {
-        const message = friendlyErrorMessage(error);
-        setErrorText(message);
-        appendLog('api', message, 'error');
-      }
-    };
+  async function persistProfiles(nextProfiles: LocalProfile[], nextActiveProfileId: string | null) {
+    setProfiles(nextProfiles);
+    setActiveProfileId(nextActiveProfileId);
+    await writeProfiles(nextProfiles);
+    await writeActiveProfileId(nextActiveProfileId);
+  }
 
-    refresh();
-    pollingRef.current = setInterval(refresh, 60 * 1000);
-
-    return () => {
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
-    };
-  }, [installationId, selectedLocationId, session?.user.id, session?.location.selectedId]);
-
-  async function handleCompleteOnboarding() {
-    await writeOnboardingComplete();
+  function handleCompleteOnboarding() {
+    writeOnboardingComplete().catch(() => undefined);
     setOnboardingComplete(true);
   }
 
-  async function handleSignIn() {
+  function handleOpenCreateProfile() {
+    setEditingProfileId(null);
+    setFormDraft(createEmptyProfile());
     setErrorText(null);
-    setLocalConnectionState('verifying');
+    setViewMode('form');
+  }
 
+  function handleOpenEditProfile(profile: LocalProfile) {
+    setEditingProfileId(profile.id);
+    setFormDraft(profile);
+    setErrorText(null);
+    setViewMode('form');
+  }
+
+  async function handleSaveProfile() {
     try {
-      const nextInstallationId = installationId || (await getInstallationId());
-      const user = await GoogleSignin.signIn();
-      if (!user.idToken) {
-        throw new Error('Google sign-in did not return an idToken.');
-      }
+      const savedProfile = normalizeProfile(formDraft);
+      const nextProfiles = editingProfileId
+        ? profiles.map((profile) => (profile.id === editingProfileId ? savedProfile : profile))
+        : [savedProfile, ...profiles];
+      const nextActiveId = activeProfileId || savedProfile.id;
 
-      await writeCachedToken(user.idToken);
-      const response = await openMobileSession({
-        installationId: nextInstallationId,
-        googleIdToken: user.idToken,
-        locationId: selectedLocationId || undefined
-      });
-
-      await applySession(response);
-      setInstallationId(nextInstallationId);
-      appendLog('api', 'Signed in and session created.');
+      await persistProfiles(nextProfiles, nextActiveId === editingProfileId ? savedProfile.id : nextActiveId);
+      setViewMode('home');
+      setEditingProfileId(null);
+      setErrorText(null);
+      appendLog('app', `Saved profile ${savedProfile.name}.`);
     } catch (error) {
-      const message = friendlyErrorMessage(error);
-      setErrorText(message);
-      setLocalConnectionState('error');
-      appendLog('api', message, 'error');
+      setErrorText(error instanceof Error ? error.message : 'Failed to save profile.');
     }
   }
 
-  async function handleLocationSelect(location: LocationItem) {
-    if (!installationId) {
+  function handleDeleteProfile(profile: LocalProfile) {
+    Alert.alert('Delete profile', `Remove ${profile.name}?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          const nextProfiles = profiles.filter((entry) => entry.id !== profile.id);
+          const nextActiveId = activeProfileId === profile.id ? nextProfiles[0]?.id || null : activeProfileId;
+          persistProfiles(nextProfiles, nextActiveId).catch(() => undefined);
+          appendLog('app', `Deleted profile ${profile.name}.`, 'warn');
+          if (editingProfileId === profile.id) {
+            setViewMode('home');
+            setEditingProfileId(null);
+          }
+        },
+      },
+    ]);
+  }
+
+  async function handleSelectProfile(profile: LocalProfile) {
+    setActiveProfileId(profile.id);
+    await writeActiveProfileId(profile.id);
+    appendLog('app', `Selected profile ${profile.name}.`);
+  }
+
+  async function handleShareProfile() {
+    if (!activeProfile) {
+      setErrorText('Select a profile first.');
       return;
     }
 
-    setSelectedLocationId(location.id);
-    await writeSelectedLocation(location.id);
-    appendLog('app', `Selected location ${location.country}.`);
-
     try {
-      setLocalConnectionState('verifying');
-      const response = await fetchMobileState(installationId, location.id);
-      await applySession(response);
-      setErrorText(null);
+      const shareLink = createShareLink(activeProfile);
+      await Share.share({ message: shareLink });
     } catch (error) {
-      const message = friendlyErrorMessage(error);
-      setErrorText(message);
-      setLocalConnectionState('error');
-      appendLog('api', message, 'error');
+      setErrorText(error instanceof Error ? error.message : 'Failed to share profile.');
     }
   }
 
-  async function handleToggleVpn() {
-    if (!session) {
-      return;
-    }
-
-    if (session.subscription.blockedReason) {
-      setLocalConnectionState('blocked');
-      setErrorText(formatBlockedReason(session.subscription.blockedReason));
-      return;
-    }
+  async function handleToggleConnection() {
+    setErrorText(null);
 
     try {
-      setErrorText(null);
-
-      if (effectiveConnectionState === 'connected' || effectiveConnectionState === 'connecting') {
-        setLocalConnectionState('disconnecting');
+      if (connectionState === 'connected' || connectionState === 'connecting') {
+        setConnectionState('disconnecting');
+        appendLog('app', 'Stopping VPN tunnel.');
         await VpnInterface.stop();
+        setConnectionState('idle');
         return;
       }
 
-      const tunnelConfig = extractTunnelConfig(session.provisioning.vpnConfig, session.mode);
-      const tunnelValidation = validateTunnelConfig(tunnelConfig);
-      if (!tunnelConfig || !tunnelValidation.valid) {
-        throw createApiError(tunnelValidation.reason || 'The backend returned an invalid VPN profile.', 'invalid_profile');
+      if (!activeProfile) {
+        throw new Error('Add and select a profile before connecting.');
       }
 
-      appendLog('app', `Starting tunnel to ${tunnelValidation.endpoint || session.provisioning.assignedEndpoint || 'resolved endpoint'}.`);
-      setLocalConnectionState('connecting');
+      const validation = validateProfile(activeProfile);
+      if (!validation.valid) {
+        throw new Error(validation.errors[0]);
+      }
+
+      const config = buildTunnelConfig(activeProfile, activeProfile.mode === 'proxy');
+      setConnectionState('connecting');
+      appendLog('app', `Starting tunnel to ${profileEndpoint(activeProfile)}.`);
       await VpnInterface.prepare();
-      await VpnInterface.start(tunnelConfig);
+      await VpnInterface.start(config);
     } catch (error) {
-      let apiError = error as ApiError;
-      if (!apiError?.code && error instanceof Error) {
-        apiError = createApiError(error.message, 'tunnel_start_failed');
-      }
-      const message = friendlyErrorMessage(apiError);
-      setLocalConnectionState('error');
-      setErrorText(message);
-      appendLog('native', message, 'error');
+      setConnectionState('error');
+      setErrorText(error instanceof Error ? error.message : 'Connection failed.');
+      appendLog('app', error instanceof Error ? error.message : 'Connection failed.', 'error');
     }
   }
 
-  async function handleOpenTelegramPurchase() {
+  async function handleRequestBootstrapPlan() {
+    setBootstrapBusy(true);
+    setErrorText(null);
+    setBootstrapPlan(null);
+
     try {
-      await Linking.openURL('https://t.me/wobbvpnbot');
+      const response = await helperRequest<{ success: boolean; data: BootstrapPlan }>('/api/v1/bootstrap/plan', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          profileName: bootstrapDraft.profileName,
+          publicHost: bootstrapDraft.publicHost,
+          publicPort: bootstrapDraft.publicPort,
+          serverName: bootstrapDraft.serverName,
+          realityDest: bootstrapDraft.realityDest,
+          fingerprint: bootstrapDraft.fingerprint,
+          spiderX: bootstrapDraft.spiderX,
+          flow: bootstrapDraft.flow,
+          mode: bootstrapDraft.mode,
+          sshHost: bootstrapDraft.sshHost,
+          sshPort: bootstrapDraft.sshPort,
+          sshUser: bootstrapDraft.sshUser,
+          uuid: bootstrapDraft.uuid || undefined,
+          publicKey: bootstrapDraft.publicKey || undefined,
+          shortId: bootstrapDraft.shortId || undefined,
+          remarks: bootstrapDraft.remarks || undefined,
+        }),
+      });
+
+      setBootstrapPlan(response.data);
+      appendLog('helper', 'Generated VPS bootstrap plan.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to open Telegram.';
-      setErrorText(message);
-      appendLog('app', message, 'error');
+      setErrorText(error instanceof Error ? error.message : 'Failed to generate setup plan.');
+      appendLog('helper', error instanceof Error ? error.message : 'Failed to generate setup plan.', 'error');
+    } finally {
+      setBootstrapBusy(false);
     }
   }
 
-  async function handleRefreshSession() {
-    if (!installationId) {
+  function handleUseBootstrapDraft() {
+    if (!bootstrapPlan) {
       return;
     }
 
-    try {
-      setErrorText(null);
-      setLocalConnectionState('verifying');
-      const response = await fetchMobileState(
-        installationId,
-        selectedLocation?.id || session?.location.selectedId || undefined
-      );
-      await applySession(response);
-      appendLog('api', 'Session refreshed.');
-    } catch (error) {
-      const message = friendlyErrorMessage(error);
-      setErrorText(message);
-      setLocalConnectionState('error');
-      appendLog('api', message, 'error');
-    }
+    const source = bootstrapPlan.profileReady && bootstrapPlan.profile ? bootstrapPlan.profile : bootstrapPlan.draftProfile;
+    const nextProfile = bootstrapDraftToProfile({
+      ...bootstrapDraft,
+      ...(source || {}),
+      profileName: String((source as Partial<LocalProfile> | undefined)?.name || bootstrapDraft.profileName),
+      publicHost: String((source as Partial<LocalProfile> | undefined)?.host || bootstrapDraft.publicHost),
+      publicPort: String((source as Partial<LocalProfile> | undefined)?.port || bootstrapDraft.publicPort),
+    });
+
+    setEditingProfileId(null);
+    setFormDraft(nextProfile);
+    setViewMode('form');
   }
 
-  async function handleShareSession() {
-    if (!session) {
-      return;
-    }
+  const connectLabel =
+    connectionState === 'connected'
+      ? 'Disconnect'
+      : connectionState === 'connecting'
+        ? 'Connecting'
+        : connectionState === 'disconnecting'
+          ? 'Disconnecting'
+          : 'Connect';
 
-    try {
-      const lines = [
-        'Wobb',
-        `Status: ${stateLabel(effectiveConnectionState, session)}`,
-        `Server: ${selectedLocation ? `${selectedLocation.country}${selectedLocation.city ? `, ${selectedLocation.city}` : ''}` : 'Not selected'}`,
-        `Mode: ${session.mode === 'vpn' ? 'TUN' : session.mode === 'proxy' ? 'Proxy' : 'Own server'}`
-      ];
-
-      if (session.provisioning.assignedEndpoint) {
-        lines.push(`Endpoint: ${session.provisioning.assignedEndpoint}`);
-      }
-
-      await Share.share({ message: lines.join('\n') });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to share session.';
-      setErrorText(message);
-      appendLog('app', message, 'error');
-    }
-  }
-
-  async function handleOpenSettings() {
-    try {
-      await Linking.openSettings();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to open settings.';
-      setErrorText(message);
-      appendLog('app', message, 'error');
-    }
-  }
-
-  const connectLabel = useMemo(() => {
-    if (effectiveConnectionState === 'connected') {
-      return 'Disconnect';
-    }
-    if (effectiveConnectionState === 'connecting' || effectiveConnectionState === 'verifying') {
-      return 'Working';
-    }
-    if (effectiveConnectionState === 'disconnecting') {
-      return 'Stopping';
-    }
-    if (effectiveConnectionState === 'blocked') {
-      return 'Blocked';
-    }
-    return 'Connect';
-  }, [effectiveConnectionState]);
-
-  const connectDisabled =
-    !session ||
-    !extractTunnelConfig(session.provisioning.vpnConfig, session.mode) ||
-    effectiveConnectionState === 'verifying' ||
-    effectiveConnectionState === 'disconnecting' ||
-    effectiveConnectionState === 'blocked';
-
-  return (
-    <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
-
-      {booting ? (
+  if (booting) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
         <View style={styles.center}>
           <View style={styles.logoBadge}>
             <Text style={styles.logoBadgeText}>W</Text>
           </View>
           <ActivityIndicator color={COLORS.accent} />
           <Text style={styles.screenTitle}>Wobb</Text>
-          <Text style={styles.mutedText}>Preparing your local session.</Text>
+          <Text style={styles.mutedText}>Loading local profiles.</Text>
         </View>
-      ) : !onboardingComplete ? (
+      </SafeAreaView>
+    );
+  }
+
+  if (!onboardingComplete) {
+    const currentSlide = ONBOARDING_SLIDES[Math.min(onboardingStep, ONBOARDING_SLIDES.length - 1)];
+    return (
+      <SafeAreaView style={styles.root}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
         <View style={styles.onboardingRoot}>
           <View style={styles.onboardingHero}>
             <View style={styles.logoBadge}>
@@ -983,30 +623,12 @@ export default function App() {
             <Text style={styles.onboardingTitle}>{currentSlide.title}</Text>
             <Text style={styles.onboardingBody}>{currentSlide.body}</Text>
           </View>
-
-          <View style={styles.onboardingPanel}>
-            <View style={styles.featureCard}>
-              <Text style={styles.featureCardTitle}>Simple setup</Text>
-              <Text style={styles.featureCardBody}>
-                Sign in, choose a location, and keep the connection flow predictable.
-              </Text>
-            </View>
-            <View style={styles.featureCard}>
-              <Text style={styles.featureCardTitle}>Account-based access</Text>
-              <Text style={styles.featureCardBody}>
-                Subscription state, provisioning, and diagnostics all come from the backend.
-              </Text>
-            </View>
-
+          <View style={styles.panel}>
             <View style={styles.onboardingDots}>
               {ONBOARDING_SLIDES.map((_, index) => (
-                <View
-                  key={index}
-                  style={[styles.onboardingDot, index === onboardingStep && styles.onboardingDotActive]}
-                />
+                <View key={index} style={[styles.onboardingDot, index === onboardingStep && styles.onboardingDotActive]} />
               ))}
             </View>
-
             <View style={styles.onboardingActions}>
               <Pressable style={styles.secondaryButton} onPress={handleCompleteOnboarding}>
                 <Text style={styles.secondaryButtonText}>Skip</Text>
@@ -1028,183 +650,219 @@ export default function App() {
             </View>
           </View>
         </View>
-      ) : !session ? (
-        <View style={styles.center}>
-          <View style={styles.signInCard}>
-            <View style={styles.logoBadge}>
-              <Text style={styles.logoBadgeText}>W</Text>
-            </View>
-            <Text style={styles.screenTitle}>Wobb</Text>
-            <Text style={styles.signInText}>
-              Sign in to load your subscription, choose a server, and create a secure session.
-            </Text>
-            <Pressable style={[styles.primaryButton, styles.fullWidthButton]} onPress={handleSignIn}>
-              <Text style={styles.primaryButtonText}>Sign in with Google</Text>
-            </Pressable>
-            <Text style={styles.signInHint}>
-              Your account is used to verify access and load the current connection state.
-            </Text>
-          </View>
-          {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
-        </View>
-      ) : (
+      </SafeAreaView>
+    );
+  }
+
+  if (viewMode === 'form') {
+    const draftValidation = validateProfile(formDraft);
+    return (
+      <SafeAreaView style={styles.root}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
         <ScrollView contentContainerStyle={styles.scrollContent}>
-          <View style={styles.header}>
-            <View style={styles.headerCopy}>
-              <Text style={styles.screenTitle}>Wobb</Text>
-              <Text style={styles.screenSubtitle}>{session.user.googleEmail}</Text>
-            </View>
-            <View style={[styles.stateBadge, { backgroundColor: tone.background }]}>
-              <Text style={[styles.stateBadgeText, { color: tone.text }]}>
-                {stateLabel(effectiveConnectionState, session)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.connectionCard}>
-            <View style={styles.connectionCopy}>
-              <Text style={styles.sectionLabel}>Selected Server</Text>
-              <Text style={styles.connectionTitle}>
-                {selectedLocation ? selectedLocation.country : 'No server selected'}
-              </Text>
-              <Text style={styles.connectionSubtitle}>
-                {selectedLocation
-                  ? `${selectedLocation.city || 'Default edge'}${session.provisioning.assignedEndpoint ? ` - ${session.provisioning.assignedEndpoint}` : ''}`
-                  : 'No endpoint assigned'}
-              </Text>
-            </View>
-
-            <Pressable
-              disabled={connectDisabled}
-              onPress={handleToggleVpn}
-              style={[styles.connectButton, connectDisabled && styles.connectButtonDisabled]}
-            >
-              <Text style={styles.connectButtonLabel}>{connectLabel}</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.summaryRow}>
-            <View style={styles.summaryChip}>
-              <Text style={styles.summaryLabel}>Mode</Text>
-              <Text style={styles.summaryValue}>
-                {session.mode === 'vpn' ? 'TUN' : session.mode === 'proxy' ? 'Proxy' : 'Own server'}
-              </Text>
-            </View>
-            <View style={styles.summaryChip}>
-              <Text style={styles.summaryLabel}>Server</Text>
-              <Text style={styles.summaryValue}>
-                {selectedLocation ? selectedLocation.flag : '--'}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.quickActions}>
-            <Pressable style={styles.quickActionButton} onPress={handleRefreshSession}>
-              <Text style={styles.quickActionLabel}>Refresh</Text>
-            </Pressable>
-            <Pressable style={styles.quickActionButton} onPress={handleShareSession}>
-              <Text style={styles.quickActionLabel}>Share</Text>
-            </Pressable>
-            <Pressable style={styles.quickActionButton} onPress={handleOpenSettings}>
-              <Text style={styles.quickActionLabel}>Settings</Text>
+          <View style={styles.headerRow}>
+            <Text style={styles.screenTitle}>{editingProfileId ? 'Edit profile' : 'New profile'}</Text>
+            <Pressable style={styles.secondaryButtonCompact} onPress={() => setViewMode('home')}>
+              <Text style={styles.secondaryButtonText}>Back</Text>
             </Pressable>
           </View>
 
           <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Plan</Text>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Tier</Text>
-              <Text style={styles.detailValue}>{session.subscription.title}</Text>
+            <Text style={styles.panelTitle}>Connection profile</Text>
+            <FormField label="Profile name" value={formDraft.name} onChangeText={(value) => setFormDraft((current) => ({ ...current, name: value }))} />
+            <FormField label="Host" value={formDraft.host} onChangeText={(value) => setFormDraft((current) => ({ ...current, host: value }))} placeholder="157.90.116.123" />
+            <FormField label="Port" value={formDraft.port} onChangeText={(value) => setFormDraft((current) => ({ ...current, port: value }))} keyboardType="numeric" />
+            <FormField label="UUID" value={formDraft.uuid} onChangeText={(value) => setFormDraft((current) => ({ ...current, uuid: value }))} />
+            <Pressable style={styles.inlineAction} onPress={() => setFormDraft((current) => ({ ...current, uuid: generateUuid() }))}>
+              <Text style={styles.inlineActionText}>Generate UUID</Text>
+            </Pressable>
+            <FormField label="Server name / SNI" value={formDraft.serverName} onChangeText={(value) => setFormDraft((current) => ({ ...current, serverName: value }))} />
+            <FormField label="REALITY public key" value={formDraft.publicKey} onChangeText={(value) => setFormDraft((current) => ({ ...current, publicKey: value }))} />
+            <FormField label="REALITY short ID" value={formDraft.shortId} onChangeText={(value) => setFormDraft((current) => ({ ...current, shortId: value }))} />
+            <FormField label="Fingerprint" value={formDraft.fingerprint} onChangeText={(value) => setFormDraft((current) => ({ ...current, fingerprint: value }))} />
+            <FormField label="Spider X" value={formDraft.spiderX} onChangeText={(value) => setFormDraft((current) => ({ ...current, spiderX: value }))} />
+            <FormField label="Flow" value={formDraft.flow} onChangeText={(value) => setFormDraft((current) => ({ ...current, flow: value }))} />
+            <FormField label="Remarks" value={formDraft.remarks} onChangeText={(value) => setFormDraft((current) => ({ ...current, remarks: value }))} multiline />
+            <View style={styles.fieldGroup}>
+              <Text style={styles.fieldLabel}>Mode</Text>
+              <ModeToggle value={formDraft.mode} onChange={(mode) => setFormDraft((current) => ({ ...current, mode }))} />
             </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Traffic</Text>
-              <Text style={styles.detailValue}>
-                {formatBytes(session.traffic.usedBytes)} / {formatBytes(session.traffic.limitBytes)}
-              </Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Expiry</Text>
-              <Text style={styles.detailValue}>{formatExpiry(session.subscription)}</Text>
-            </View>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>State</Text>
-              <Text style={styles.detailValue}>
-                {session.subscription.blockedReason
-                  ? formatBlockedReason(session.subscription.blockedReason)
-                  : session.subscription.status}
-              </Text>
-            </View>
-            {session.subscription.blockedReason ? (
-              <Pressable style={styles.inlineAction} onPress={handleOpenTelegramPurchase}>
-                <Text style={styles.inlineActionText}>Open Telegram</Text>
+            {draftValidation.valid ? null : <Text style={styles.warningText}>{validationText(draftValidation)}</Text>}
+            <Pressable style={styles.primaryButton} onPress={handleSaveProfile}>
+              <Text style={styles.primaryButtonText}>Save profile</Text>
+            </Pressable>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  if (viewMode === 'bootstrap') {
+    return (
+      <SafeAreaView style={styles.root}>
+        <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.headerRow}>
+            <Text style={styles.screenTitle}>Bootstrap VPS</Text>
+            <Pressable style={styles.secondaryButtonCompact} onPress={() => setViewMode('home')}>
+              <Text style={styles.secondaryButtonText}>Back</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.panel}>
+            <Text style={styles.panelTitle}>Setup plan</Text>
+            <Text style={styles.panelText}>Generate a manual setup plan. If UUID, public key, and short ID are already known, Wobb can turn the result into a ready profile.</Text>
+            <FormField label="Profile name" value={bootstrapDraft.profileName} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, profileName: value }))} />
+            <FormField label="Public host" value={bootstrapDraft.publicHost} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, publicHost: value }))} placeholder="157.90.116.123" />
+            <FormField label="Public port" value={bootstrapDraft.publicPort} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, publicPort: value }))} keyboardType="numeric" />
+            <FormField label="Server name" value={bootstrapDraft.serverName} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, serverName: value }))} />
+            <FormField label="REALITY destination" value={bootstrapDraft.realityDest} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, realityDest: value }))} />
+            <FormField label="SSH host" value={bootstrapDraft.sshHost} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, sshHost: value }))} />
+            <FormField label="SSH port" value={bootstrapDraft.sshPort} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, sshPort: value }))} keyboardType="numeric" />
+            <FormField label="SSH user" value={bootstrapDraft.sshUser} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, sshUser: value }))} />
+            <FormField label="UUID (optional)" value={bootstrapDraft.uuid} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, uuid: value }))} />
+            <FormField label="Public key (optional)" value={bootstrapDraft.publicKey} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, publicKey: value }))} />
+            <FormField label="Short ID (optional)" value={bootstrapDraft.shortId} onChangeText={(value) => setBootstrapDraft((current) => ({ ...current, shortId: value }))} />
+            <Pressable style={styles.primaryButton} onPress={handleRequestBootstrapPlan}>
+              <Text style={styles.primaryButtonText}>{bootstrapBusy ? 'Working' : 'Generate setup plan'}</Text>
+            </Pressable>
+          </View>
+
+          {bootstrapPlan ? (
+            <View style={styles.panel}>
+              <Text style={styles.panelTitle}>Plan result</Text>
+              <Text style={styles.detailValue}>Profile ready: {bootstrapPlan.profileReady ? 'Yes' : 'Not yet'}</Text>
+              {bootstrapPlan.missingFields && bootstrapPlan.missingFields.length > 0 ? (
+                <Text style={styles.warningText}>Missing fields: {bootstrapPlan.missingFields.join(', ')}</Text>
+              ) : null}
+              {bootstrapPlan.manualSteps?.map((step, index) => (
+                <Text key={`${step}-${index}`} style={styles.stepText}>{index + 1}. {step}</Text>
+              ))}
+              <Pressable style={styles.secondaryButton} onPress={handleUseBootstrapDraft}>
+                <Text style={styles.secondaryButtonText}>
+                  {bootstrapPlan.profileReady ? 'Import ready profile' : 'Open draft profile'}
+                </Text>
               </Pressable>
-            ) : null}
+            </View>
+          ) : null}
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.root}>
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.background} />
+      <ScrollView contentContainerStyle={styles.scrollContent} ref={logViewportRef}>
+        <View style={styles.header}>
+          <View style={styles.headerCopy}>
+            <Text style={styles.screenTitle}>Wobb</Text>
+            <Text style={styles.screenSubtitle}>Self-hosted VLESS and REALITY client</Text>
+          </View>
+          <View style={[styles.stateBadge, { backgroundColor: tone.background }]}>
+            <Text style={[styles.stateBadgeText, { color: tone.text }]}>{stateLabel(connectionState)}</Text>
+          </View>
+        </View>
+
+        <View style={styles.connectionCard}>
+          <View style={styles.connectionCopy}>
+            <Text style={styles.sectionLabel}>Active profile</Text>
+            <Text style={styles.connectionTitle}>{activeProfile ? activeProfile.name : 'No profile selected'}</Text>
+            <Text style={styles.connectionSubtitle}>
+              {activeProfile ? `${profileEndpoint(activeProfile)} - ${activeProfile.serverName}` : 'Add a local server profile to start.'}
+            </Text>
           </View>
 
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Servers</Text>
-            {locations.map((item, index) => {
-              const selected = item.id === (selectedLocationId || session.location.selectedId);
+          <Pressable
+            disabled={!activeProfile || (connectionState !== 'connected' && !activeValidation.valid)}
+            onPress={handleToggleConnection}
+            style={[
+              styles.connectButton,
+              (!activeProfile || (connectionState !== 'connected' && !activeValidation.valid)) && styles.connectButtonDisabled,
+            ]}
+          >
+            <Text style={styles.connectButtonLabel}>{connectLabel}</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.summaryRow}>
+          <View style={styles.summaryChip}>
+            <Text style={styles.summaryLabel}>Mode</Text>
+            <Text style={styles.summaryValue}>{activeProfile ? (activeProfile.mode === 'vpn' ? 'VPN' : 'Proxy') : '--'}</Text>
+          </View>
+          <View style={styles.summaryChip}>
+            <Text style={styles.summaryLabel}>Endpoint</Text>
+            <Text style={styles.summaryValue}>{activeProfile ? profileEndpoint(activeProfile) : '--'}</Text>
+          </View>
+        </View>
+
+        {!activeValidation.valid && activeProfile ? <Text style={styles.warningText}>{validationText(activeValidation)}</Text> : null}
+
+        <View style={styles.quickActions}>
+          <Pressable style={styles.quickActionButton} onPress={handleOpenCreateProfile}>
+            <Text style={styles.quickActionLabel}>Add Profile</Text>
+          </Pressable>
+          <Pressable style={styles.quickActionButton} onPress={() => setViewMode('bootstrap')}>
+            <Text style={styles.quickActionLabel}>Bootstrap</Text>
+          </Pressable>
+          <Pressable style={styles.quickActionButton} onPress={handleShareProfile}>
+            <Text style={styles.quickActionLabel}>Share</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Profiles</Text>
+          {profiles.length === 0 ? (
+            <Text style={styles.logEmpty}>No local profiles yet.</Text>
+          ) : (
+            profiles.map((profile, index) => {
+              const selected = profile.id === activeProfileId;
               return (
-                <React.Fragment key={item.id}>
+                <View key={profile.id}>
                   {index > 0 ? <View style={styles.locationSeparator} /> : null}
-                  <Pressable
-                    onPress={() => handleLocationSelect(item)}
-                    style={[styles.locationRow, selected && styles.locationRowSelected]}
-                  >
+                  <View style={[styles.locationRow, selected && styles.locationRowSelected]}>
                     <View style={styles.locationPrimary}>
-                      <Text style={styles.locationFlag}>{item.flag}</Text>
                       <View>
-                        <Text style={styles.locationTitle}>{item.country}</Text>
-                        <Text style={styles.locationSubtitle}>{item.city || 'Default edge'}</Text>
+                        <Text style={styles.locationTitle}>{profile.name}</Text>
+                        <Text style={styles.locationSubtitle}>{profile.host}:{profile.port} - {profile.serverName}</Text>
                       </View>
                     </View>
-                    <Text style={styles.locationMeta}>{selected ? 'Selected' : item.city || 'Server'}</Text>
-                  </Pressable>
-                </React.Fragment>
-              );
-            })}
-          </View>
-
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>Logs</Text>
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Backend state</Text>
-              <Text style={styles.detailValue}>{session.state}</Text>
-            </View>
-            {session.provisioning.maintenanceReason ? (
-              <Text style={styles.warningText}>{session.provisioning.maintenanceReason}</Text>
-            ) : null}
-            <View style={styles.logContainer}>
-              {logs.length === 0 ? (
-                <Text style={styles.logEmpty}>No diagnostics yet.</Text>
-              ) : (
-                logs.map((entry) => (
-                  <View key={entry.id} style={styles.logRow}>
-                    <Text style={styles.logMeta}>
-                      {entry.timestamp.slice(11, 19)} {entry.source.toUpperCase()}
-                    </Text>
-                    <Text
-                      style={[
-                        styles.logMessage,
-                        entry.level === 'error'
-                          ? styles.logError
-                          : entry.level === 'warn'
-                            ? styles.logWarn
-                            : null
-                      ]}
-                    >
-                      {entry.message}
-                    </Text>
+                    <View style={styles.rowActions}>
+                      <Pressable style={styles.rowAction} onPress={() => handleSelectProfile(profile)}>
+                        <Text style={styles.rowActionText}>{selected ? 'Active' : 'Use'}</Text>
+                      </Pressable>
+                      <Pressable style={styles.rowAction} onPress={() => handleOpenEditProfile(profile)}>
+                        <Text style={styles.rowActionText}>Edit</Text>
+                      </Pressable>
+                      <Pressable style={styles.rowActionDanger} onPress={() => handleDeleteProfile(profile)}>
+                        <Text style={styles.rowActionDangerText}>Delete</Text>
+                      </Pressable>
+                    </View>
                   </View>
-                ))
-              )}
-            </View>
-          </View>
+                </View>
+              );
+            })
+          )}
+        </View>
 
-          {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
-        </ScrollView>
-      )}
+        <View style={styles.panel}>
+          <Text style={styles.panelTitle}>Logs</Text>
+          <View style={styles.logContainer}>
+            {logs.length === 0 ? (
+              <Text style={styles.logEmpty}>No logs yet.</Text>
+            ) : (
+              logs.map((entry) => (
+                <View key={entry.id} style={styles.logRow}>
+                  <Text style={styles.logMeta}>{entry.timestamp.slice(11, 19)} {entry.source.toUpperCase()}</Text>
+                  <Text style={[styles.logMessage, entry.level === 'error' ? styles.logError : entry.level === 'warn' ? styles.logWarn : null]}>{entry.message}</Text>
+                </View>
+              ))
+            )}
+          </View>
+        </View>
+
+        {errorText ? <Text style={styles.errorText}>{errorText}</Text> : null}
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -1212,22 +870,18 @@ export default function App() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    backgroundColor: COLORS.background
+    backgroundColor: COLORS.background,
   },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    gap: 12
+    gap: 12,
   },
-  onboardingRoot: {
-    flex: 1,
-    justifyContent: 'space-between',
-    padding: 20
-  },
-  onboardingHero: {
-    paddingTop: 40
+  scrollContent: {
+    padding: 16,
+    gap: 12,
   },
   logoBadge: {
     width: 52,
@@ -1236,99 +890,87 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accent,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 18
+    marginBottom: 18,
   },
   logoBadgeText: {
     color: '#FFFFFF',
     fontSize: 22,
-    fontWeight: '700'
+    fontWeight: '700',
+  },
+  mutedText: {
+    color: COLORS.muted,
+    fontSize: 13,
+  },
+  onboardingRoot: {
+    flex: 1,
+    justifyContent: 'space-between',
+    padding: 20,
+  },
+  onboardingHero: {
+    paddingTop: 40,
   },
   onboardingEyebrow: {
     color: COLORS.accent,
     fontSize: 13,
     fontWeight: '600',
-    marginBottom: 14
+    marginBottom: 14,
   },
   onboardingTitle: {
     color: COLORS.text,
     fontSize: 34,
     fontWeight: '700',
     lineHeight: 40,
-    maxWidth: 280
+    maxWidth: 280,
   },
   onboardingBody: {
     color: COLORS.muted,
     fontSize: 16,
     lineHeight: 24,
     marginTop: 16,
-    maxWidth: 320
-  },
-  onboardingPanel: {
-    backgroundColor: COLORS.panel,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: 18,
-    gap: 14
-  },
-  featureCard: {
-    backgroundColor: COLORS.panelMuted,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    padding: 14
-  },
-  featureCardTitle: {
-    color: COLORS.text,
-    fontSize: 15,
-    fontWeight: '600',
-    marginBottom: 6
-  },
-  featureCardBody: {
-    color: COLORS.muted,
-    fontSize: 13,
-    lineHeight: 19
+    maxWidth: 320,
   },
   onboardingDots: {
     flexDirection: 'row',
-    gap: 8
+    gap: 8,
   },
   onboardingDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: COLORS.border
+    backgroundColor: COLORS.border,
   },
   onboardingDotActive: {
     width: 22,
-    backgroundColor: COLORS.accent
+    backgroundColor: COLORS.accent,
   },
   onboardingActions: {
     flexDirection: 'row',
-    gap: 10
-  },
-  scrollContent: {
-    padding: 16,
-    gap: 12
+    gap: 10,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    gap: 12
+    gap: 12,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 12,
   },
   headerCopy: {
-    flex: 1
+    flex: 1,
   },
   screenTitle: {
     color: COLORS.text,
     fontSize: 28,
-    fontWeight: '700'
+    fontWeight: '700',
   },
   screenSubtitle: {
     color: COLORS.muted,
     fontSize: 14,
-    marginTop: 4
+    marginTop: 4,
   },
   panel: {
     backgroundColor: COLORS.panel,
@@ -1336,7 +978,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     padding: 16,
-    gap: 12
+    gap: 12,
+  },
+  panelTitle: {
+    color: COLORS.text,
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  panelText: {
+    color: COLORS.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  stateBadge: {
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  stateBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   connectionCard: {
     backgroundColor: COLORS.panel,
@@ -1344,39 +1005,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
     padding: 16,
-    gap: 16
+    gap: 16,
   },
   connectionCopy: {
-    gap: 6
+    gap: 6,
   },
   sectionLabel: {
     color: COLORS.muted,
     fontSize: 12,
     fontWeight: '600',
-    textTransform: 'uppercase'
+    textTransform: 'uppercase',
   },
   connectionTitle: {
     color: COLORS.text,
     fontSize: 22,
-    fontWeight: '700'
+    fontWeight: '700',
   },
   connectionSubtitle: {
     color: COLORS.muted,
-    fontSize: 13
-  },
-  panelTitle: {
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: '700'
-  },
-  stateBadge: {
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8
-  },
-  stateBadgeText: {
-    fontSize: 12,
-    fontWeight: '700'
+    fontSize: 13,
   },
   connectButton: {
     width: '100%',
@@ -1384,19 +1031,19 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.accent,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14
+    paddingVertical: 14,
   },
   connectButtonDisabled: {
-    opacity: 0.45
+    opacity: 0.45,
   },
   connectButtonLabel: {
     color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '700'
+    fontWeight: '700',
   },
   summaryRow: {
     flexDirection: 'row',
-    gap: 10
+    gap: 10,
   },
   summaryChip: {
     flex: 1,
@@ -1406,20 +1053,20 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.panelMuted,
     paddingHorizontal: 12,
     paddingVertical: 10,
-    gap: 4
+    gap: 4,
   },
   summaryLabel: {
     color: COLORS.muted,
-    fontSize: 12
+    fontSize: 12,
   },
   summaryValue: {
     color: COLORS.text,
     fontSize: 14,
-    fontWeight: '600'
+    fontWeight: '600',
   },
   quickActions: {
     flexDirection: 'row',
-    gap: 10
+    gap: 10,
   },
   quickActionButton: {
     flex: 1,
@@ -1429,129 +1076,159 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.panelMuted,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 11
+    paddingVertical: 11,
   },
   quickActionLabel: {
     color: COLORS.text,
     fontSize: 13,
-    fontWeight: '600'
+    fontWeight: '600',
   },
   primaryButton: {
     backgroundColor: COLORS.accent,
     borderRadius: 8,
     paddingVertical: 12,
-    paddingHorizontal: 18
-  },
-  fullWidthButton: {
-    alignSelf: 'stretch'
-  },
-  flexButton: {
-    flex: 1
+    paddingHorizontal: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   primaryButtonText: {
     color: '#FFFFFF',
-    fontWeight: '700'
+    fontWeight: '700',
   },
   secondaryButton: {
-    flex: 1,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
+    backgroundColor: COLORS.panelMuted,
     paddingVertical: 10,
     paddingHorizontal: 14,
-    backgroundColor: COLORS.panelMuted,
     alignItems: 'center',
-    justifyContent: 'center'
+    justifyContent: 'center',
+  },
+  secondaryButtonCompact: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.panelMuted,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
   },
   secondaryButtonText: {
     color: COLORS.text,
-    fontWeight: '600'
+    fontWeight: '600',
   },
-  signInCard: {
-    alignSelf: 'stretch',
-    backgroundColor: COLORS.panel,
+  flexButton: {
+    flex: 1,
+  },
+  fieldGroup: {
+    gap: 8,
+  },
+  fieldLabel: {
+    color: COLORS.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    backgroundColor: COLORS.panelMuted,
+    color: COLORS.text,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+  },
+  inputMultiline: {
+    minHeight: 88,
+    textAlignVertical: 'top',
+  },
+  modeToggle: {
+    flexDirection: 'row',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
-    padding: 24,
-    alignItems: 'center'
+    backgroundColor: COLORS.panelMuted,
+    overflow: 'hidden',
   },
-  signInText: {
+  modeButton: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeButtonActive: {
+    backgroundColor: COLORS.accent,
+  },
+  modeButtonText: {
     color: COLORS.muted,
-    fontSize: 15,
-    lineHeight: 22,
-    textAlign: 'center',
-    marginTop: 10,
-    marginBottom: 20
-  },
-  signInHint: {
-    color: COLORS.muted,
-    fontSize: 12,
-    lineHeight: 18,
-    marginTop: 14,
-    textAlign: 'center'
-  },
-  detailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 12
-  },
-  detailLabel: {
-    color: COLORS.muted,
-    fontSize: 14
-  },
-  detailValue: {
-    color: COLORS.text,
-    fontSize: 14,
     fontWeight: '600',
-    flexShrink: 1,
-    textAlign: 'right'
+  },
+  modeButtonTextActive: {
+    color: '#FFFFFF',
   },
   locationSeparator: {
-    height: 10
+    height: 10,
   },
   locationRow: {
     borderWidth: 1,
     borderColor: COLORS.border,
     borderRadius: 8,
     padding: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
     gap: 12,
-    backgroundColor: COLORS.panelMuted
+    backgroundColor: COLORS.panelMuted,
   },
   locationRowSelected: {
+    borderColor: COLORS.accent,
     backgroundColor: '#11213f',
-    borderColor: COLORS.accent
   },
   locationPrimary: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    flex: 1
-  },
-  locationFlag: {
-    width: 28,
-    textAlign: 'center',
-    color: COLORS.text,
-    fontSize: 16,
-    fontWeight: '700'
+    justifyContent: 'space-between',
   },
   locationTitle: {
     color: COLORS.text,
     fontSize: 14,
-    fontWeight: '600'
+    fontWeight: '600',
   },
   locationSubtitle: {
     color: COLORS.muted,
-    fontSize: 12
-  },
-  locationMeta: {
-    color: COLORS.muted,
     fontSize: 12,
-    maxWidth: 90,
-    textAlign: 'right'
+    marginTop: 4,
+  },
+  rowActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  rowAction: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.panel,
+  },
+  rowActionText: {
+    color: COLORS.text,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  rowActionDanger: {
+    flex: 1,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#5f2438',
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.dangerSoft,
+  },
+  rowActionDangerText: {
+    color: COLORS.danger,
+    fontSize: 12,
+    fontWeight: '600',
   },
   logContainer: {
     borderWidth: 1,
@@ -1560,56 +1237,61 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.panelMuted,
     padding: 12,
     gap: 10,
-    maxHeight: 260
+    maxHeight: 320,
   },
   logRow: {
-    gap: 4
+    gap: 4,
   },
   logMeta: {
     color: COLORS.muted,
     fontSize: 11,
-    fontWeight: '600'
+    fontWeight: '600',
   },
   logMessage: {
     color: COLORS.text,
-    fontSize: 13
+    fontSize: 13,
   },
   logWarn: {
-    color: COLORS.warning
+    color: COLORS.warning,
   },
   logError: {
-    color: COLORS.danger
+    color: COLORS.danger,
   },
   logEmpty: {
     color: COLORS.muted,
-    fontSize: 13
+    fontSize: 13,
   },
   warningText: {
     color: COLORS.warning,
-    fontSize: 13
+    fontSize: 13,
+  },
+  errorText: {
+    color: COLORS.danger,
+    textAlign: 'center',
+    fontSize: 13,
+  },
+  detailValue: {
+    color: COLORS.text,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  stepText: {
+    color: COLORS.text,
+    fontSize: 13,
+    lineHeight: 20,
   },
   inlineAction: {
-    marginTop: 8,
     alignSelf: 'flex-start',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: COLORS.panelMuted,
     paddingHorizontal: 12,
-    paddingVertical: 10
+    paddingVertical: 10,
   },
   inlineActionText: {
     color: COLORS.text,
     fontSize: 13,
-    fontWeight: '600'
+    fontWeight: '600',
   },
-  mutedText: {
-    color: COLORS.muted,
-    fontSize: 13
-  },
-  errorText: {
-    color: COLORS.danger,
-    textAlign: 'center',
-    fontSize: 13
-  }
 });

@@ -106,7 +106,6 @@ dependencies {
     implementation files('libs/wobb-core.aar')
     implementation "com.facebook.react:react-android:0.85.0"
     implementation "com.facebook.hermes:hermes-android:250829098.0.10"
-    implementation "com.google.android.gms:play-services-auth:${rootProject.ext.googlePlayServicesAuthVersion}"
     implementation "androidx.annotation:annotation:1.7.1"
     implementation "androidx.appcompat:appcompat:1.6.1"
     implementation "androidx.core:core-ktx:1.12.0"

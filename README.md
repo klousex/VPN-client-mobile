@@ -1,20 +1,21 @@
 # WOBB Mobile
 
-Public React Native Android client for WOBB.
+React Native Android client for self-hosted VLESS / REALITY access.
 
-## Contents
+## Current flow
 
-- React Native UI
-- Android native VPN bridge
-- Android project files
+- onboarding
+- create or edit local server profiles
+- optional VPS bootstrap plan via the helper backend
+- connect or disconnect with the selected local profile
 
 ## Requirements
 
 - Node.js 20+
 - Java 17
 - Android SDK / platform tools
-- A local `adb`
-- A local `android/app/libs/wobb-core.aar` built outside this repo
+- `adb`
+- Local `android/app/libs/wobb-core.aar` built outside this repo
 
 ## Setup
 
@@ -24,7 +25,7 @@ Public React Native Android client for WOBB.
    npm install
    ```
 
-2. Put the local Android core archive here:
+2. Put the Android core archive here:
 
    ```text
    android/app/libs/wobb-core.aar
@@ -36,7 +37,7 @@ Public React Native Android client for WOBB.
    npm run start
    ```
 
-4. Reverse the backend port over USB:
+4. If you want the optional VPS bootstrap helper over USB, reverse port 3000:
 
    ```bash
    npm run reverse
@@ -47,5 +48,3 @@ Public React Native Android client for WOBB.
    ```bash
    npm run android
    ```
-
-The app expects the backend API on `http://127.0.0.1:3000` or the Android emulator bridge `http://10.0.2.2:3000`.
