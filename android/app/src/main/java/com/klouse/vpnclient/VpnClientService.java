@@ -1,4 +1,4 @@
-package com.wobbmobile.wobb;
+package com.klouse.vpnclient;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -22,12 +22,12 @@ import java.io.IOException;
 import libXray.DialerController;
 import libXray.LibXray;
 
-public class WobbVpnService extends VpnService {
-    public static final String ACTION_START = "com.wobbmobile.wobb.action.START";
-    public static final String ACTION_STOP = "com.wobbmobile.wobb.action.STOP";
-    public static final String EXTRA_CONFIG_JSON = "com.wobbmobile.wobb.extra.CONFIG_JSON";
+public class VpnClientService extends VpnService {
+    public static final String ACTION_START = "com.klouse.vpnclient.action.START";
+    public static final String ACTION_STOP = "com.klouse.vpnclient.action.STOP";
+    public static final String EXTRA_CONFIG_JSON = "com.klouse.vpnclient.extra.CONFIG_JSON";
 
-    private static final String CHANNEL_ID = "wobb_vpn_channel";
+    private static final String CHANNEL_ID = "vpn_client_channel";
     private static final int NOTIFICATION_ID = 1042;
 
     @Nullable
@@ -41,10 +41,10 @@ public class WobbVpnService extends VpnService {
         }
 
         if (ACTION_STOP.equals(intent.getAction())) {
-            WobbVpnEventEmitter.emitLog("service", "Disconnect requested by user.");
+            VpnClientEventEmitter.emitLog("service", "Disconnect requested by user.");
             stopTunnel();
             stopForeground(STOP_FOREGROUND_REMOVE);
-            WobbVpnEventEmitter.emitVpnStatus("idle");
+            VpnClientEventEmitter.emitVpnStatus("idle");
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -83,7 +83,7 @@ public class WobbVpnService extends VpnService {
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(getApplicationInfo().icon)
-            .setContentTitle("WOBB VPN")
+            .setContentTitle("VPN Client")
             .setContentText("Self-hosted runtime is active on this device.")
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -106,21 +106,21 @@ public class WobbVpnService extends VpnService {
 
         NotificationChannel channel = new NotificationChannel(
             CHANNEL_ID,
-            "WOBB VPN",
+            "VPN Client",
             NotificationManager.IMPORTANCE_LOW
         );
-        channel.setDescription("WOBB mobile VPN status");
+        channel.setDescription("VPN Client mobile VPN status");
         manager.createNotificationChannel(channel);
     }
 
     private synchronized void startTunnel(@Nullable String configJson) {
         stopTunnel();
         starting = true;
-        WobbVpnEventEmitter.emitVpnStatus("connecting");
-        WobbVpnEventEmitter.emitLog("service", "Preparing Android TUN interface.");
+        VpnClientEventEmitter.emitVpnStatus("connecting");
+        VpnClientEventEmitter.emitLog("service", "Preparing Android TUN interface.");
 
         Builder builder = new Builder()
-            .setSession("WOBB VPN")
+            .setSession("VPN Client")
             .addAddress("10.0.0.2", 32)
             .addDnsServer("1.1.1.1")
             .addRoute("0.0.0.0", 0);
@@ -133,13 +133,13 @@ public class WobbVpnService extends VpnService {
 
         if (tunInterface == null) {
             starting = false;
-            WobbVpnEventEmitter.emitLog("stderr", "Failed to establish Android VPN interface.");
-            WobbVpnEventEmitter.emitVpnStatus("error");
+            VpnClientEventEmitter.emitLog("stderr", "Failed to establish Android VPN interface.");
+            VpnClientEventEmitter.emitVpnStatus("error");
             stopSelf();
             return;
         }
 
-        WobbVpnEventEmitter.emitLog("service", "Android VPN interface established.");
+        VpnClientEventEmitter.emitLog("service", "Android VPN interface established.");
 
         final String runtimeConfig = configJson == null ? "{}" : configJson;
         final int tunFd = tunInterface.getFd();
@@ -149,21 +149,21 @@ public class WobbVpnService extends VpnService {
                 logResolvedEndpoint(runtimeConfig);
                 startEmbeddedCore(runtimeConfig, tunFd);
                 boolean running = LibXray.getXrayState();
-                WobbVpnEventEmitter.emitLog("service", "Embedded core state: " + running);
+                VpnClientEventEmitter.emitLog("service", "Embedded core state: " + running);
                 if (!running) {
                     throw new IllegalStateException("Embedded core did not report a running state.");
                 }
-                WobbVpnEventEmitter.emitLog("service", "Embedded Wobb Core started.");
-                WobbVpnEventEmitter.emitVpnStatus("connected");
+                VpnClientEventEmitter.emitLog("service", "Embedded VPN Client Core started.");
+                VpnClientEventEmitter.emitVpnStatus("connected");
             } catch (Exception exception) {
-                WobbVpnEventEmitter.emitLog("stderr", "Failed to start embedded core: " + exception.getMessage());
+                VpnClientEventEmitter.emitLog("stderr", "Failed to start embedded core: " + exception.getMessage());
                 stopTunnel();
-                WobbVpnEventEmitter.emitVpnStatus("error");
+                VpnClientEventEmitter.emitVpnStatus("error");
                 stopSelf();
             } finally {
                 starting = false;
             }
-        }, "WobbVpnCoreStart");
+        }, "VpnClientCoreStart");
         bootstrapThread.start();
     }
 
@@ -233,27 +233,27 @@ public class WobbVpnService extends VpnService {
             }
         }
 
-        WobbVpnEventEmitter.emitLog("service", "Runtime endpoint: " + address + ":" + port + " (security=" + security + ")");
+        VpnClientEventEmitter.emitLog("service", "Runtime endpoint: " + address + ":" + port + " (security=" + security + ")");
     }
 
     private void startEmbeddedCore(String configString, int tunFd) throws Exception {
         registerDialerController();
-        WobbVpnEventEmitter.emitLog("service", "Starting embedded core with Android tunnel fd=" + tunFd + ".");
-        WobbVpnEventEmitter.emitLog("service", "Calling libXray.LibXray.runXrayFromJSON(...).");
+        VpnClientEventEmitter.emitLog("service", "Starting embedded core with Android tunnel fd=" + tunFd + ".");
+        VpnClientEventEmitter.emitLog("service", "Calling libXray.LibXray.runXrayFromJSON(...).");
         String result = LibXray.runXrayFromJSON(configString);
-        WobbVpnEventEmitter.emitLog("service", "LibXray response: " + result);
-        WobbVpnEventEmitter.emitLog("service", "Current mobile bridge starts libXray from JSON only; verify live traffic before trusting the tunnel.");
+        VpnClientEventEmitter.emitLog("service", "LibXray response: " + result);
+        VpnClientEventEmitter.emitLog("service", "Current mobile bridge starts libXray from JSON only; verify live traffic before trusting the tunnel.");
     }
 
     private void stopEmbeddedCore() {
         try {
             if (LibXray.getXrayState()) {
-                WobbVpnEventEmitter.emitLog("service", "Stopping embedded Wobb Core bridge.");
+                VpnClientEventEmitter.emitLog("service", "Stopping embedded VPN Client Core bridge.");
             }
             String result = LibXray.stopXray();
-            WobbVpnEventEmitter.emitLog("service", "Embedded Wobb Core stopped: " + result);
+            VpnClientEventEmitter.emitLog("service", "Embedded VPN Client Core stopped: " + result);
         } catch (Exception exception) {
-            WobbVpnEventEmitter.emitLog("stderr", "Embedded core shutdown hook unavailable: " + exception.getMessage());
+            VpnClientEventEmitter.emitLog("stderr", "Embedded core shutdown hook unavailable: " + exception.getMessage());
         }
     }
 
@@ -266,9 +266,9 @@ public class WobbVpnService extends VpnService {
 
         try {
             tunInterface.close();
-            WobbVpnEventEmitter.emitLog("service", "Android VPN interface closed.");
+            VpnClientEventEmitter.emitLog("service", "Android VPN interface closed.");
         } catch (IOException exception) {
-            WobbVpnEventEmitter.emitLog("stderr", "Failed to close Android VPN interface: " + exception.getMessage());
+            VpnClientEventEmitter.emitLog("stderr", "Failed to close Android VPN interface: " + exception.getMessage());
         } finally {
             tunInterface = null;
         }
@@ -278,7 +278,7 @@ public class WobbVpnService extends VpnService {
     public void onDestroy() {
         starting = false;
         stopTunnel();
-        WobbVpnEventEmitter.emitVpnStatus("idle");
+        VpnClientEventEmitter.emitVpnStatus("idle");
         super.onDestroy();
     }
 }

@@ -1,4 +1,4 @@
-package com.wobbmobile.wobb;
+package com.klouse.vpnclient;
 
 import android.app.Activity;
 import android.content.ClipData;
@@ -29,14 +29,14 @@ import com.facebook.react.module.annotations.ReactModule;
  * React Native bridge for starting and stopping the Android VPN tunnel.
  *
  * This module is intentionally thin: it handles permission negotiation and
- * forwards runtime config JSON to {@link WobbVpnService}, where libxray or a
+ * forwards runtime config JSON to {@link VpnClientService}, where libxray or a
  * Go-mobile wrapper can be attached.
  */
-@ReactModule(name = WobbVpnModule.NAME)
-public class WobbVpnModule extends ReactContextBaseJavaModule {
-    public static final String NAME = "WobbVpnModule";
+@ReactModule(name = VpnClientModule.NAME)
+public class VpnClientModule extends ReactContextBaseJavaModule {
+    public static final String NAME = "VpnClientModule";
     private static final int VPN_REQUEST_CODE = 44127;
-    private static final String PREFS_NAME = "wobb_mobile_prefs";
+    private static final String PREFS_NAME = "vpn_client_mobile_prefs";
 
     @Nullable
     private Promise pendingPreparePromise;
@@ -54,14 +54,14 @@ public class WobbVpnModule extends ReactContextBaseJavaModule {
             result.putBoolean("requested", true);
             pendingPreparePromise.resolve(result);
             pendingPreparePromise = null;
-            WobbVpnEventEmitter.emitPermissionStatus(granted ? "granted" : "denied");
+            VpnClientEventEmitter.emitPermissionStatus(granted ? "granted" : "denied");
         }
     };
 
-    public WobbVpnModule(ReactApplicationContext reactContext) {
+    public VpnClientModule(ReactApplicationContext reactContext) {
         super(reactContext);
         reactContext.addActivityEventListener(activityEventListener);
-        WobbVpnEventEmitter.register(reactContext);
+        VpnClientEventEmitter.register(reactContext);
     }
 
     @NonNull
@@ -92,7 +92,7 @@ public class WobbVpnModule extends ReactContextBaseJavaModule {
 
         pendingPreparePromise = promise;
         activity.startActivityForResult(prepareIntent, VPN_REQUEST_CODE);
-        WobbVpnEventEmitter.emitPermissionStatus("requested");
+        VpnClientEventEmitter.emitPermissionStatus("requested");
     }
 
     @ReactMethod
@@ -114,16 +114,16 @@ public class WobbVpnModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void startVpn(String configJson, Promise promise) {
         ReactApplicationContext context = getReactApplicationContext();
-        WobbVpnEventEmitter.register(context);
+        VpnClientEventEmitter.register(context);
 
         if (configJson == null || configJson.trim().isEmpty()) {
             promise.reject("E_VPN_CONFIG", "VPN config JSON is empty.");
             return;
         }
 
-        Intent intent = new Intent(context, WobbVpnService.class);
-        intent.setAction(WobbVpnService.ACTION_START);
-        intent.putExtra(WobbVpnService.EXTRA_CONFIG_JSON, configJson);
+        Intent intent = new Intent(context, VpnClientService.class);
+        intent.setAction(VpnClientService.ACTION_START);
+        intent.putExtra(VpnClientService.EXTRA_CONFIG_JSON, configJson);
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -131,10 +131,10 @@ public class WobbVpnModule extends ReactContextBaseJavaModule {
             } else {
                 context.startService(intent);
             }
-            WobbVpnEventEmitter.emitVpnStatus("connecting");
+            VpnClientEventEmitter.emitVpnStatus("connecting");
             promise.resolve(true);
         } catch (Exception exception) {
-            WobbVpnEventEmitter.emitVpnStatus("error");
+            VpnClientEventEmitter.emitVpnStatus("error");
             promise.reject("E_VPN_START", exception);
         }
     }
@@ -145,16 +145,16 @@ public class WobbVpnModule extends ReactContextBaseJavaModule {
     @ReactMethod
     public void stopVpn(Promise promise) {
         ReactApplicationContext context = getReactApplicationContext();
-        WobbVpnEventEmitter.register(context);
-        Intent intent = new Intent(context, WobbVpnService.class);
-        intent.setAction(WobbVpnService.ACTION_STOP);
+        VpnClientEventEmitter.register(context);
+        Intent intent = new Intent(context, VpnClientService.class);
+        intent.setAction(VpnClientService.ACTION_STOP);
 
         try {
-            WobbVpnEventEmitter.emitVpnStatus("disconnecting");
+            VpnClientEventEmitter.emitVpnStatus("disconnecting");
             context.startService(intent);
             promise.resolve(true);
         } catch (Exception exception) {
-            WobbVpnEventEmitter.emitVpnStatus("error");
+            VpnClientEventEmitter.emitVpnStatus("error");
             promise.reject("E_VPN_STOP", exception);
         }
     }
@@ -200,7 +200,7 @@ public class WobbVpnModule extends ReactContextBaseJavaModule {
                 return;
             }
 
-            ClipData clipData = ClipData.newPlainText("wobb", value == null ? "" : value);
+            ClipData clipData = ClipData.newPlainText("vpn-client", value == null ? "" : value);
             clipboard.setPrimaryClip(clipData);
             promise.resolve(true);
         } catch (Exception exception) {

@@ -1,4 +1,4 @@
-package com.wobbmobile.wobb;
+package com.klouse.vpnclient;
 
 import android.app.Application;
 import androidx.annotation.NonNull;
@@ -22,7 +22,7 @@ public class MainApplication extends Application implements ReactApplication {
     private final List<ReactPackage> reactPackages =
             Arrays.<ReactPackage>asList(
                     new MainReactPackage(),
-                    new WobbVpnPackage());
+                    new VpnClientPackage());
 
     private final DefaultReactNativeHost reactNativeHost =
             new DefaultReactNativeHost(this) {

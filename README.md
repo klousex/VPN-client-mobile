@@ -1,8 +1,8 @@
-﻿# WOBB Mobile
+# VPN Client Mobile
 
 React Native Android client for a self-hosted Xray / VLESS / REALITY workflow.
 
-WOBB Mobile is the Android-facing public repository in the WOBB split project. It stores profiles locally on-device, supports import and export, provides optional bootstrap planning through the helper backend, and connects through an Android runtime bridge. It is intentionally not a public VPN SaaS client.
+VPN Client Mobile is the Android-facing public repository in the VPN Client split project. It stores profiles locally on-device, supports import and export, provides optional bootstrap planning through the helper backend, and connects through an Android runtime bridge. It is intentionally not a public VPN SaaS client.
 
 ## Release Summary
 
@@ -28,7 +28,7 @@ This repo is intended to publish:
 - React 19
 - Android native bridge in Java
 - Local storage for profiles
-- External Android core archive via `android/app/libs/wobb-core.aar`
+- External Android core archive via `android/app/libs/vpn-client-core.aar`
 
 ## Repository Responsibility
 
@@ -49,9 +49,9 @@ This repo is not responsible for:
 
 ## Related Repositories
 
-- `wobb-mobile`: Android client
-- `wobb-desktop`: Electron desktop client
-- `wobb-backend`: optional helper service for validation and bootstrap planning
+- `vpn-client-mobile`: Android client
+- `vpn-client-desktop`: Electron desktop client
+- `vpn-client-backend`: optional helper service for validation and bootstrap planning
 
 The backend is optional. The main product flow is local and profile-based.
 
@@ -72,7 +72,7 @@ storage.ts              Local persistence helpers
 - Java 17
 - Android SDK and platform tools
 - `adb`
-- local Android core archive at `android/app/libs/wobb-core.aar`
+- local Android core archive at `android/app/libs/vpn-client-core.aar`
 
 ## Setup
 
@@ -85,7 +85,7 @@ npm install
 Place the Android runtime archive here:
 
 ```text
-android/app/libs/wobb-core.aar
+android/app/libs/vpn-client-core.aar
 ```
 
 The AAR is a local runtime dependency and should stay out of source control.
@@ -174,10 +174,10 @@ To enable signed release builds:
 
 1. copy `android/signing.properties.example` to `android/signing.properties`
 2. provide real values for:
-   - `WOBB_RELEASE_STORE_FILE`
-   - `WOBB_RELEASE_STORE_PASSWORD`
-   - `WOBB_RELEASE_KEY_ALIAS`
-   - `WOBB_RELEASE_KEY_PASSWORD`
+   - `VPN_CLIENT_RELEASE_STORE_FILE`
+   - `VPN_CLIENT_RELEASE_STORE_PASSWORD`
+   - `VPN_CLIENT_RELEASE_KEY_ALIAS`
+   - `VPN_CLIENT_RELEASE_KEY_PASSWORD`
 
 The same keys can also be provided through environment variables or Gradle properties.
 

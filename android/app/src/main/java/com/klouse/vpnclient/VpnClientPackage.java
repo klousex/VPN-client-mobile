@@ -1,4 +1,4 @@
-package com.wobbmobile.wobb;
+package com.klouse.vpnclient;
 
 import androidx.annotation.NonNull;
 import com.facebook.react.BaseReactPackage;
@@ -13,13 +13,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Registers the Wobb Android VPN native module with React Native.
+ * Registers the VPN Client Android VPN native module with React Native.
  */
-public class WobbVpnPackage extends BaseReactPackage {
+public class VpnClientPackage extends BaseReactPackage {
     @Override
     public NativeModule getModule(@NonNull String name, @NonNull ReactApplicationContext reactContext) {
-        if (WobbVpnModule.NAME.equals(name)) {
-            return new WobbVpnModule(reactContext);
+        if (VpnClientModule.NAME.equals(name)) {
+            return new VpnClientModule(reactContext);
         }
         return null;
     }
@@ -32,10 +32,10 @@ public class WobbVpnPackage extends BaseReactPackage {
             public Map<String, ReactModuleInfo> getReactModuleInfos() {
                 Map<String, ReactModuleInfo> infos = new HashMap<>();
                 infos.put(
-                        WobbVpnModule.NAME,
+                        VpnClientModule.NAME,
                         new ReactModuleInfo(
-                                WobbVpnModule.NAME,
-                                WobbVpnModule.class.getName(),
+                                VpnClientModule.NAME,
+                                VpnClientModule.class.getName(),
                                 false,
                                 false,
                                 false,

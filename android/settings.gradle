@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Wobb"
+rootProject.name = "VPN Client"
 include(":app")

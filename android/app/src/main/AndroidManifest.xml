@@ -7,14 +7,14 @@
     <application
         android:name=".MainApplication"
         android:icon="@android:drawable/sym_def_app_icon"
-        android:label="Wobb"
-        android:theme="@style/Theme.Wobb"
+        android:label="VPN Client"
+        android:theme="@style/Theme.VPNClient"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
             android:exported="true"
-            android:label="Wobb"
+            android:label="VPN Client"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -25,12 +25,12 @@
         </activity>
 
         <service
-            android:name=".WobbVpnService"
+            android:name=".VpnClientService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse"
             android:icon="@android:drawable/sym_def_app_icon"
-            android:label="Wobb VPN session"
+            android:label="VPN Client session"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />

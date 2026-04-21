@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -70,16 +70,16 @@ type BootstrapPlan = {
   commandSnippets?: string[];
 };
 
-const PROFILES_KEY = 'wobb.mobile.selfhosted.profiles.v2';
-const ACTIVE_PROFILE_KEY = 'wobb.mobile.selfhosted.active-profile.v2';
-const ONBOARDING_COMPLETE_KEY = 'wobb.mobile.selfhosted.onboarding.v2';
+const PROFILES_KEY = 'vpn-client.mobile.selfhosted.profiles.v2';
+const ACTIVE_PROFILE_KEY = 'vpn-client.mobile.selfhosted.active-profile.v2';
+const ONBOARDING_COMPLETE_KEY = 'vpn-client.mobile.selfhosted.onboarding.v2';
 const HELPER_API_BASE_CANDIDATES = ['http://127.0.0.1:3000', 'http://10.0.2.2:3000'];
 
 const ONBOARDING_SLIDES: OnboardingSlide[] = [
   {
     eyebrow: 'Self-hosted',
     title: 'Connect with your own server',
-    body: 'Wobb keeps your VLESS and REALITY profiles on the device so the core flow stays local and account-free.',
+    body: 'VPN Client keeps your VLESS and REALITY profiles on the device so the core flow stays local and account-free.',
   },
   {
     eyebrow: 'Import or create',
@@ -118,7 +118,7 @@ function animateLayout() {
   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
 }
 
-type WobbVpnBridge = {
+type VpnClientBridge = {
   prepareVpn?: () => Promise<{ granted?: boolean }>;
   startVpn?: (configJson: string) => Promise<void>;
   stopVpn?: () => Promise<void>;
@@ -126,34 +126,34 @@ type WobbVpnBridge = {
   getClipboardText?: () => Promise<string | null>;
 };
 
-const { WobbVpnModule } = NativeModules as {
-  WobbVpnModule?: WobbVpnBridge;
+const { VpnClientModule } = NativeModules as {
+  VpnClientModule?: VpnClientBridge;
 };
 
 const VpnInterface = {
   async prepare(): Promise<void> {
-    if (!WobbVpnModule?.prepareVpn) {
+    if (!VpnClientModule?.prepareVpn) {
       throw new Error('VPN bridge is unavailable in this Android build.');
     }
 
-    const result = await WobbVpnModule.prepareVpn();
+    const result = await VpnClientModule.prepareVpn();
     if (result?.granted === false) {
       throw new Error('VPN permission was not granted.');
     }
   },
   start(config: Record<string, unknown>) {
-    if (!WobbVpnModule?.startVpn) {
+    if (!VpnClientModule?.startVpn) {
       return Promise.reject(new Error('VpnInterface.start is unavailable in this build.'));
     }
 
-    return WobbVpnModule.startVpn(JSON.stringify(config));
+    return VpnClientModule.startVpn(JSON.stringify(config));
   },
   stop() {
-    if (!WobbVpnModule?.stopVpn) {
+    if (!VpnClientModule?.stopVpn) {
       return Promise.reject(new Error('VpnInterface.stop is unavailable in this build.'));
     }
 
-    return WobbVpnModule.stopVpn();
+    return VpnClientModule.stopVpn();
   },
 };
 
@@ -299,20 +299,20 @@ function validationText(validation: ValidationResult): string | null {
 }
 
 async function copyText(text: string): Promise<boolean> {
-  if (!WobbVpnModule?.setClipboardText) {
+  if (!VpnClientModule?.setClipboardText) {
     return false;
   }
 
-  await WobbVpnModule.setClipboardText(text);
+  await VpnClientModule.setClipboardText(text);
   return true;
 }
 
 async function readClipboardText(): Promise<string | null> {
-  if (!WobbVpnModule?.getClipboardText) {
+  if (!VpnClientModule?.getClipboardText) {
     return null;
   }
 
-  return WobbVpnModule.getClipboardText();
+  return VpnClientModule.getClipboardText();
 }
 
 function FormField({
@@ -475,7 +475,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    const statusListener = DeviceEventEmitter.addListener('WobbVpnStatus', (payload) => {
+    const statusListener = DeviceEventEmitter.addListener('VpnClientStatus', (payload) => {
       const status = String(payload?.status || '').toLowerCase();
       if (status === 'connecting') {
         setConnectionState('connecting');
@@ -497,7 +497,7 @@ export default function App() {
       }
     });
 
-    const logListener = DeviceEventEmitter.addListener('WobbVpnLog', (payload) => {
+    const logListener = DeviceEventEmitter.addListener('VpnClientLog', (payload) => {
       const stream = String(payload?.stream || 'native');
       const message = String(payload?.message || '').trim();
       if (message) {
@@ -505,7 +505,7 @@ export default function App() {
       }
     });
 
-    const permissionListener = DeviceEventEmitter.addListener('WobbVpnPermission', (payload) => {
+    const permissionListener = DeviceEventEmitter.addListener('VpnClientPermission', (payload) => {
       const status = String(payload?.status || '').toLowerCase();
       if (status === 'requested') {
         setConnectionState('permission_required');
@@ -886,7 +886,7 @@ export default function App() {
             <Text style={styles.logoBadgeText}>W</Text>
           </View>
           <ActivityIndicator color={COLORS.accent} />
-          <Text style={styles.screenTitle}>Wobb</Text>
+          <Text style={styles.screenTitle}>VPN Client</Text>
           <Text style={styles.mutedText}>Loading local profiles.</Text>
         </View>
       </SafeAreaView>
@@ -958,7 +958,7 @@ export default function App() {
                   }
                 }}
               >
-                <Text style={styles.primaryButtonText}>{finalStep ? 'Open Wobb' : 'Continue'}</Text>
+                <Text style={styles.primaryButtonText}>{finalStep ? 'Open VPN Client' : 'Continue'}</Text>
               </Pressable>
             </View>
           </View>
@@ -1237,7 +1237,7 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <View style={styles.headerCopy}>
-            <Text style={styles.screenTitle}>Wobb</Text>
+            <Text style={styles.screenTitle}>VPN Client</Text>
             <Text style={styles.screenSubtitle}>Self-hosted VLESS / REALITY client</Text>
           </View>
           <View style={[styles.stateBadge, { backgroundColor: tone.background }]}> 

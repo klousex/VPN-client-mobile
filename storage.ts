@@ -6,15 +6,15 @@ type StorageBridge = {
   removeItem?: (key: string) => Promise<void>;
 };
 
-const { WobbVpnModule } = NativeModules as {
-  WobbVpnModule?: StorageBridge;
+const { VpnClientModule } = NativeModules as {
+  VpnClientModule?: StorageBridge;
 };
 
 const memoryStore = new Map<string, string>();
 
 export async function getItem(key: string): Promise<string | null> {
-  if (WobbVpnModule?.getItem) {
-    const value = await WobbVpnModule.getItem(key);
+  if (VpnClientModule?.getItem) {
+    const value = await VpnClientModule.getItem(key);
     return value ?? null;
   }
 
@@ -22,8 +22,8 @@ export async function getItem(key: string): Promise<string | null> {
 }
 
 export async function setItem(key: string, value: string): Promise<void> {
-  if (WobbVpnModule?.setItem) {
-    await WobbVpnModule.setItem(key, value);
+  if (VpnClientModule?.setItem) {
+    await VpnClientModule.setItem(key, value);
     return;
   }
 
@@ -31,8 +31,8 @@ export async function setItem(key: string, value: string): Promise<void> {
 }
 
 export async function removeItem(key: string): Promise<void> {
-  if (WobbVpnModule?.removeItem) {
-    await WobbVpnModule.removeItem(key);
+  if (VpnClientModule?.removeItem) {
+    await VpnClientModule.removeItem(key);
     return;
   }
 

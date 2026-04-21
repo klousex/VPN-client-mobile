@@ -1,8 +1,8 @@
 {
-  "name": "wobb-mobile",
+  "name": "vpn-client-mobile",
   "version": "1.0.0",
   "private": true,
-  "description": "Self-hosted WOBB mobile client for VLESS / REALITY",
+  "description": "Self-hosted VPN Client mobile client for VLESS / REALITY",
   "main": "index.js",
   "scripts": {
     "start": "react-native start --config metro.config.js",

@@ -1,4 +1,4 @@
-package com.wobbmobile.wobb;
+package com.klouse.vpnclient;
 
 import android.os.Bundle;
 import com.facebook.react.ReactActivity;
@@ -9,7 +9,7 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate;
 public class MainActivity extends ReactActivity {
     @Override
     protected String getMainComponentName() {
-        return "WobbMobile";
+        return "VPNClientMobile";
     }
 
     @Override

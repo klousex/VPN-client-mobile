@@ -1,4 +1,4 @@
-package com.wobbmobile.wobb;
+package com.klouse.vpnclient;
 
 import androidx.annotation.Nullable;
 
@@ -10,11 +10,11 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 /**
  * Emits VPN lifecycle events from Android native code back to React Native.
  */
-public final class WobbVpnEventEmitter {
+public final class VpnClientEventEmitter {
     @Nullable
     private static ReactApplicationContext reactContext;
 
-    private WobbVpnEventEmitter() {
+    private VpnClientEventEmitter() {
     }
 
     public static void register(ReactApplicationContext context) {
@@ -22,11 +22,11 @@ public final class WobbVpnEventEmitter {
     }
 
     public static void emitVpnStatus(String status) {
-        emit("WobbVpnStatus", "status", status);
+        emit("VpnClientStatus", "status", status);
     }
 
     public static void emitPermissionStatus(String status) {
-        emit("WobbVpnPermission", "status", status);
+        emit("VpnClientPermission", "status", status);
     }
 
     public static void emitLog(String stream, String message) {
@@ -39,7 +39,7 @@ public final class WobbVpnEventEmitter {
         payload.putString("message", message);
         reactContext
             .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-            .emit("WobbVpnLog", payload);
+            .emit("VpnClientLog", payload);
     }
 
     private static void emit(String eventName, String key, String value) {

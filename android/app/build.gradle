@@ -43,14 +43,14 @@ def resolveSigningFile = { String filePath ->
     return candidate.isAbsolute() ? candidate : new File(rootDir, filePath)
 }
 
-def releaseStoreFile = envOrSigningProperty('WOBB_RELEASE_STORE_FILE')
-def releaseStorePassword = envOrSigningProperty('WOBB_RELEASE_STORE_PASSWORD')
-def releaseKeyAlias = envOrSigningProperty('WOBB_RELEASE_KEY_ALIAS')
-def releaseKeyPassword = envOrSigningProperty('WOBB_RELEASE_KEY_PASSWORD')
+def releaseStoreFile = envOrSigningProperty('VPN_CLIENT_RELEASE_STORE_FILE')
+def releaseStorePassword = envOrSigningProperty('VPN_CLIENT_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = envOrSigningProperty('VPN_CLIENT_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = envOrSigningProperty('VPN_CLIENT_RELEASE_KEY_PASSWORD')
 def hasReleaseSigning = [releaseStoreFile, releaseStorePassword, releaseKeyAlias, releaseKeyPassword].every { value -> value != null && value.toString().trim() }
 
 android {
-    namespace 'com.wobbmobile.wobb'
+    namespace 'com.klouse.vpnclient'
 
     signingConfigs {
         if (hasReleaseSigning) {
@@ -69,7 +69,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.wobbmobile.wobb"
+        applicationId "com.klouse.vpnclient"
         minSdk 31
         targetSdk 35
         versionCode 1
@@ -157,7 +157,7 @@ tasks.named("preBuild").configure {
 
 dependencies {
     implementation fileTree(dir: 'libs', include: ['*.jar'])
-    implementation files('libs/wobb-core.aar')
+    implementation files('libs/vpn-client-core.aar')
     implementation "com.facebook.react:react-android:0.85.0"
     implementation "com.facebook.hermes:hermes-android:250829098.0.10"
     implementation "androidx.annotation:annotation:1.7.1"

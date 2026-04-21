@@ -1,5 +1,5 @@
 <resources>
-    <style name="Theme.Wobb" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <style name="Theme.VPNClient" parent="Theme.AppCompat.DayNight.NoActionBar">
         <item name="android:windowBackground">@android:color/black</item>
     </style>
 </resources>
